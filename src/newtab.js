@@ -114,6 +114,40 @@ function requestMetadata(url) {
     .catch(() => ({ title: null, image: null }));
 }
 
+/**
+ * OGP 画像が無いページは、実際の見た目を撮った画像で代替する。
+ * 撮影は相手サイトへの間隔を空けて順番に行われるため、すぐには返らない。
+ * 出来上がりは follient:screenshot-ready で送られてくる。
+ */
+function requestScreenshot(url) {
+  return browser.runtime
+    .sendMessage({ type: 'follient:screenshot', url })
+    .catch(() => ({ image: null }));
+}
+
+/** 撮影待ちのカードを URL から引けるようにしておく。 */
+const cardsAwaitingShot = new Map();
+
+function rememberForShot(url, card) {
+  let list = cardsAwaitingShot.get(url);
+  if (!list) {
+    list = new Set();
+    cardsAwaitingShot.set(url, list);
+  }
+  list.add(card);
+}
+
+browser.runtime.onMessage.addListener((message) => {
+  if (!message || message.type !== 'follient:screenshot-ready') return undefined;
+  const list = cardsAwaitingShot.get(message.url);
+  if (!list) return undefined;
+  for (const card of list) {
+    if (card.isConnected) showImage(card, message.image);
+  }
+  cardsAwaitingShot.delete(message.url);
+  return undefined;
+});
+
 /** ビューエリアに入ったカードだけ OGP を取りにいく。 */
 const viewportObserver = new IntersectionObserver(
   (entries) => {
@@ -143,7 +177,18 @@ async function hydrateCard(card) {
 
   if (data && data.image) {
     showImage(card, data.image);
+    return;
+  }
+
+  // OGP 画像が無いので、ページの見た目を撮ったものに切り替える
+  const shot = await requestScreenshot(url);
+  if (myGeneration !== generation || !card.isConnected) return;
+
+  if (shot && shot.image) {
+    showImage(card, shot.image);
   } else {
+    // 撮影待ち。出来上がったら screenshot-ready で差し替わる
+    if (shot && shot.queued) rememberForShot(url, card);
     layoutCard(card);
   }
 }
@@ -307,6 +352,7 @@ async function render() {
 
   viewportObserver.disconnect();
   cardResizeObserver.disconnect();
+  cardsAwaitingShot.clear();
   grid.textContent = '';
   emptyMessage.hidden = true;
 

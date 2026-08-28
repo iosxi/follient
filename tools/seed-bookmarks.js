@@ -8,6 +8,24 @@
   const already = await browser.storage.local.get(FLAG);
   if (already[FLAG]) return;
 
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  /**
+   * 新規プロファイルの初回起動では、Firefox 自身による既定ブックマークの
+   * 取り込みが背景ページより後に走り、先に入れたものを消してしまう。
+   * 取り込みが終わった (= メニューに既定の項目が現れた) のを見てから入れる。
+   */
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    try {
+      const menu = await browser.bookmarks.getChildren('menu________');
+      if (menu.length > 0) break;
+    } catch (e) {
+      /* ルートがまだ無い。待つ。 */
+    }
+    await sleep(500);
+  }
+  await sleep(3000); // 取り込みの後片付けが終わるまで少し置く
+
   const TREE = [
     {
       title: '開発',
@@ -37,6 +55,19 @@
         { title: 'Hacker News', url: 'https://news.ycombinator.com/' },
       ],
     },
+    {
+      // OGP 画像を持たないページばかりのフォルダ。スクリーンショット代替と、
+      // 同一ホストが並んだときの間隔制御を確かめるためのもの。
+      title: 'OGPなし',
+      children: [
+        { title: 'Hacker News', url: 'https://news.ycombinator.com/' },
+        { title: 'HN - newest', url: 'https://news.ycombinator.com/newest' },
+        { title: 'HN - ask', url: 'https://news.ycombinator.com/ask' },
+        { title: 'HN - show', url: 'https://news.ycombinator.com/show' },
+        { title: 'arXiv', url: 'https://arxiv.org/' },
+        { title: 'Example', url: 'https://example.com/' },
+      ],
+    },
     { title: 'Mozilla', url: 'https://www.mozilla.org/ja/' },
     { title: 'Firefox', url: 'https://www.mozilla.org/ja/firefox/new/' },
     { title: 'Wikipedia', url: 'https://ja.wikipedia.org/' },
@@ -62,7 +93,12 @@
     }
   }
 
-  await insert('toolbar_____', TREE);
-  await browser.storage.local.set({ [FLAG]: true });
-  console.log('follient: test bookmarks seeded');
+  try {
+    await insert('toolbar_____', TREE);
+    await browser.storage.local.set({ [FLAG]: true });
+    const added = await browser.bookmarks.getChildren('toolbar_____');
+    console.log('follient: test bookmarks seeded (' + added.length + ' items)');
+  } catch (e) {
+    console.error('follient: seeding failed', e);
+  }
 })();
