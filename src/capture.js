@@ -31,17 +31,18 @@
   /** 読み込み完了後、描画が落ち着くまで待つ時間。 */
   const SETTLE_MS = 1800;
 
-  /** 撮影用ウィンドウの大きさ。 */
-  const SHOT_WIDTH = 1000;
-  const SHOT_HEIGHT = 700;
-
   /**
-   * 撮影用ウィンドウは画面の右下隅へ追い出し、はみ出させて目立たなくする。
-   * 最小化 (state:'minimized') は使えない。windows.create は state と
-   * width/height の同時指定を拒否するうえ、最小化中は描画が止まるため。
-   * ページを実際に描画させる必要がある以上、ウィンドウ自体は避けられない。
+   * 撮影用ウィンドウは最初から最小化して開く。こうすると一度も画面に
+   * 描画されないまま、中身だけを captureTab で取り出せる。
+   *
+   * 注意: state と width/height は同時に指定できない (windows.create が
+   * 例外を投げる)。そのため大きさは Firefox の既定に任せる。撮った画像は
+   * どのみち後処理で切り詰めて縮小するので支障は無い。
+   *
+   * 画面外へ動かす方法は使えない。Firefox はウィンドウ位置を画面内へ
+   * 強制的に引き戻すため、左右上のどこへ追い出してもクランプされる。
    */
-  const OFFSCREEN_MARGIN = 60;
+  const WINDOW_STATE = 'minimized';
 
   /** 保存する画像の最大幅。カード幅の 2 倍程度あれば足りる。 */
   const STORE_MAX_WIDTH = 640;
@@ -274,13 +275,8 @@
       const win = await browser.windows.create({
         url,
         type: 'popup',
-        width: SHOT_WIDTH,
-        height: SHOT_HEIGHT,
-        // 画面の右下隅へ追い出す。ブラウザが画面内に引き戻すこともあるが、
-        // その場合でも作業領域の中央には出ない。
-        left: Math.max(0, (screen.availWidth || SHOT_WIDTH) - OFFSCREEN_MARGIN),
-        top: Math.max(0, (screen.availHeight || SHOT_HEIGHT) - OFFSCREEN_MARGIN),
-        // 操作の邪魔をしないよう、前面に出さない
+        // 最初から最小化して開くので、一度も画面に現れない
+        state: WINDOW_STATE,
         focused: false,
       });
       windowId = win.id;
