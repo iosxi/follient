@@ -190,8 +190,19 @@ node tools/fetch-signed.js          # manifest のバージョン
 node tools/fetch-signed.js 2.0.0    # 明示する場合
 ```
 
+`--list` を付けると AMO 側にある版とその状態だけを表示する。状態が `public`
+なら署名は済んでいる。
+
+版の一覧は `/api/v5/addons/addon/{guid}/versions/?filter=all_with_unlisted`
+から取る。`addon/` セグメントが要る点と、unlisted は `filter` を付けないと
+一覧に出てこない点に注意。`/api/v5/addons/{guid}/versions/{version}/` という
+経路もあるが、こちらは 404 になる。
+
 AMO は未公開 (unlisted) のアドオンに対し、資格情報が通らない場合も 401 ではなく
 404 を返す。404 が出たら「バージョンが無い」と「認証が通っていない」の両方を疑う。
+
+なお AMO は再梱包時に manifest.json の非 ASCII 文字を \\uXXXX 形式に変換する。
+署名済み XPI と手元のビルドはバイト単位では一致しないが、内容は同じ。
 
 ### アイコン
 

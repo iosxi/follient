@@ -1,6 +1,7 @@
 /**
  * AMO で署名済みの XPI を取ってくる。
  *   AMO_JWT_ISSUER=... AMO_JWT_SECRET=... node tools/fetch-signed.js [version]
+ *   AMO_JWT_ISSUER=... AMO_JWT_SECRET=... node tools/fetch-signed.js --list
  *
  * 署名そのものは tools/sign.js で行うが、アップロードが済んだ後に
  * ダウンロードだけ失敗することがある (端末が閉じた、通信が切れた等)。
@@ -34,9 +35,14 @@ const root = path.join(__dirname, '..');
 const distDir = path.join(root, 'dist');
 const manifest = JSON.parse(fs.readFileSync(path.join(root, 'manifest.json'), 'utf8'));
 const addonId = manifest.browser_specific_settings.gecko.id;
-const version = process.argv[2] || manifest.version;
 
-/** AMO の API は短命な JWT で認証する。 */
+const args = process.argv.slice(2);
+const listOnly = args.includes('--list');
+const wantedVersion = args.find((a) => !a.startsWith('--')) || manifest.version;
+
+const API = 'https://addons.mozilla.org/api/v5';
+
+/** AMO の API は短命な JWT で認証する。トークンは決して表示しない。 */
 function makeToken() {
   const b64 = (input) =>
     Buffer.from(input).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
@@ -57,74 +63,117 @@ function makeToken() {
   return header + '.' + payload + '.' + signature;
 }
 
-function authHeaders() {
-  return { Authorization: 'JWT ' + makeToken() };
+async function get(url) {
+  const response = await fetch(url, { headers: { Authorization: 'JWT ' + makeToken() } });
+  let body = null;
+  try {
+    body = await response.json();
+  } catch (e) {
+    body = null;
+  }
+  return { ok: response.ok, status: response.status, body };
+}
+
+/**
+ * 版の一覧を取る。unlisted は filter を付けないと出てこない。
+ * AMO の API は過去に経路が変わっているので、候補を順に試す。
+ */
+async function listVersions() {
+  const id = encodeURIComponent(addonId);
+  const candidates = [
+    API + '/addons/addon/' + id + '/versions/?filter=all_with_unlisted',
+    API + '/addons/addon/' + id + '/versions/',
+    API + '/addons/' + id + '/versions/',
+  ];
+
+  for (const url of candidates) {
+    const result = await get(url);
+    console.log('  ' + (result.ok ? 'OK  ' : result.status + ' ') + url.replace(API, ''));
+    if (result.ok && result.body && Array.isArray(result.body.results)) {
+      let versions = result.body.results;
+      let next = result.body.next;
+      while (next) {
+        const page = await get(next);
+        if (!page.ok || !page.body || !Array.isArray(page.body.results)) break;
+        versions = versions.concat(page.body.results);
+        next = page.body.next;
+      }
+      return versions;
+    }
+  }
+  return null;
+}
+
+/** 版オブジェクトからダウンロードできるファイルを取り出す。 */
+function fileOf(version) {
+  if (version.file) return version.file;
+  if (Array.isArray(version.files) && version.files.length > 0) return version.files[0];
+  return null;
+}
+
+function describe(version) {
+  const file = fileOf(version);
+  const status = file ? file.status || '(status不明)' : '(fileなし)';
+  const signed = file && file.signed !== undefined ? ' signed=' + file.signed : '';
+  return '  ' + String(version.version).padEnd(10) + ' ' + status + signed;
 }
 
 async function main() {
-  const base = 'https://addons.mozilla.org/api/v5/addons';
-  const url =
-    base + '/' + encodeURIComponent(addonId) + '/versions/' + encodeURIComponent(version) + '/';
+  console.log('アドオン: ' + addonId);
+  console.log('版の一覧を問い合わせています…');
 
-  console.log('問い合わせ中: ' + addonId + ' ' + version);
+  const versions = await listVersions();
 
-  const response = await fetch(url, { headers: authHeaders() });
-  if (!response.ok) {
-    const body = await response.text();
-    console.error('AMO への問い合わせに失敗しました (HTTP ' + response.status + ')');
-    console.error(body.slice(0, 800));
-    if (response.status === 404) {
-      // AMO は未公開 (unlisted) のアドオンに対し、認証が通らない場合も
-      // 401 ではなく 404 を返す。どちらなのかは応答から区別できない。
-      console.error(
-        [
-          '',
-          '次のいずれかです。',
-          '  - 資格情報が違う、または失効している (AMO は未公開アドオンに 404 を返す)',
-          '  - そのバージョンがまだ AMO に無い → 先に tools/sign.js を実行する',
-        ].join('\n')
-      );
-    }
+  if (!versions) {
+    console.error('');
+    console.error('版の一覧を取得できませんでした。');
+    console.error('AMO は未公開 (unlisted) のアドオンに対し、認証が通らない場合も');
+    console.error('401 ではなく 404 を返します。次を確認してください。');
+    console.error('  - AMO_JWT_ISSUER / AMO_JWT_SECRET が現在有効なものか');
+    console.error('  - 発行元のアカウントがこのアドオンの所有者か');
+    console.error('  - manifest の id がアップロード時と同じか: ' + addonId);
     process.exit(1);
   }
 
-  const data = await response.json();
+  console.log('');
+  console.log('AMO にある版:');
+  for (const version of versions) console.log(describe(version));
+  console.log('');
 
-  // 署名 API は files[]、通常の版 API は file を返す。両方を受ける。
-  const files = Array.isArray(data.files) ? data.files : data.file ? [data.file] : [];
-  if (files.length === 0) {
-    console.error('このバージョンにファイルがありません。');
-    console.error(JSON.stringify(data).slice(0, 800));
+  if (listOnly) return;
+
+  const target = versions.find((v) => String(v.version) === String(wantedVersion));
+  if (!target) {
+    console.error(wantedVersion + ' は AMO にありません。先に tools/sign.js を実行してください。');
     process.exit(1);
   }
 
-  const file = files[0];
-  const signed = file.signed === true || file.status === 'public' || file.status === 'unreviewed';
-  const downloadUrl = file.download_url || file.url;
-
-  console.log('  署名: ' + (file.signed === undefined ? '(不明) status=' + file.status : file.signed));
+  const file = fileOf(target);
+  const downloadUrl = file && (file.url || file.download_url);
   if (!downloadUrl) {
-    console.error('ダウンロード URL がありません。まだ署名処理が終わっていない可能性があります。');
-    process.exit(1);
-  }
-  if (!signed) {
-    console.error('まだ署名されていません。数分おいて再実行してください。');
+    console.error(wantedVersion + ' にダウンロードできるファイルがありません。');
+    console.error('署名処理がまだ終わっていない可能性があります。数分おいて再実行してください。');
     process.exit(1);
   }
 
-  const download = await fetch(downloadUrl, { headers: authHeaders() });
+  console.log('取得します: ' + wantedVersion);
+  const download = await fetch(downloadUrl, {
+    headers: { Authorization: 'JWT ' + makeToken() },
+  });
   if (!download.ok) {
     console.error('ダウンロードに失敗しました (HTTP ' + download.status + ')');
     process.exit(1);
   }
 
-  const name = path.basename(new URL(downloadUrl).pathname) || 'follient-' + version + '-signed.xpi';
+  const name =
+    path.basename(new URL(downloadUrl).pathname) || 'follient-' + wantedVersion + '-signed.xpi';
   const outFile = path.join(distDir, name);
   fs.mkdirSync(distDir, { recursive: true });
   fs.writeFileSync(outFile, Buffer.from(await download.arrayBuffer()));
 
-  const size = fs.statSync(outFile).size;
-  console.log('保存しました: ' + path.relative(root, outFile) + ' (' + size + ' bytes)');
+  console.log(
+    '保存しました: ' + path.relative(root, outFile) + ' (' + fs.statSync(outFile).size + ' bytes)'
+  );
 }
 
 main().catch((e) => {
