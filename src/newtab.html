@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <title>follient</title>
+    <link rel="stylesheet" href="newtab.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="up-link" id="up-link" href="#" hidden>
+        <span class="up-icon" aria-hidden="true">↑</span>
+        <span>上層に戻る</span>
+      </a>
+      <nav class="breadcrumb" id="breadcrumb" aria-label="現在のフォルダ"></nav>
+    </header>
+
+    <main>
+      <div class="grid" id="grid"></div>
+      <p class="empty" id="empty" hidden>このフォルダにはブックマークがありません。</p>
+    </main>
+
+    <template id="card-template">
+      <a class="card" href="#">
+        <div class="thumb">
+          <div class="thumb-fallback"></div>
+          <img class="thumb-img" alt="" decoding="async" />
+        </div>
+        <div class="meta">
+          <div class="title"></div>
+          <div class="host"></div>
+        </div>
+      </a>
+    </template>
+
+    <script src="newtab.js"></script>
+  </body>
+</html>

@@ -1,0 +1,34 @@
+{
+  "manifest_version": 2,
+  "name": "follient",
+  "version": "1.0.0",
+  "description": "ブックマークをPinterest風のタイルで表示する新しいタブ。",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "{565b13f1-4b6f-4d19-b7d3-83119f4a60ed}",
+      "strict_min_version": "140.0",
+      "data_collection_permissions": {
+        "required": [
+          "none"
+        ]
+      }
+    }
+  },
+  "permissions": [
+    "bookmarks",
+    "storage",
+    "<all_urls>"
+  ],
+  "chrome_url_overrides": {
+    "newtab": "src/newtab.html"
+  },
+  "background": {
+    "scripts": [
+      "src/background.js"
+    ]
+  },
+  "icons": {
+    "48": "src/icons/icon-48.png",
+    "96": "src/icons/icon-96.png"
+  }
+}
