@@ -2,8 +2,9 @@
  * follient - スクリーンショットによる代替サムネイル
  *
  * OGP 画像を持たないページのために、実際にページを開いて見た目を撮る。
- * 拡張機能からヘッドレスブラウザは起動できないので、フォーカスを奪わない
- * ポップアップウィンドウでページを開き、tabs.captureTab() で撮って閉じる。
+ * 拡張機能からヘッドレスブラウザは起動できないので、利用者のウィンドウに
+ * 隠しタブを 1 枚だけ作り、そこへ順に読み込んで tabs.captureTab() で撮る。
+ * 新しいウィンドウは作らない (作ると一瞬表示されフォーカスを奪うため)。
  *
  * 相手サイトに負荷や不審なアクセスと見なされないよう、撮影は必ず 1 件ずつ、
  * 全体間隔とホスト単位の間隔の両方を空けて行う。
@@ -30,19 +31,6 @@
 
   /** 読み込み完了後、描画が落ち着くまで待つ時間。 */
   const SETTLE_MS = 1800;
-
-  /**
-   * 撮影用ウィンドウは最初から最小化して開く。こうすると一度も画面に
-   * 描画されないまま、中身だけを captureTab で取り出せる。
-   *
-   * 注意: state と width/height は同時に指定できない (windows.create が
-   * 例外を投げる)。そのため大きさは Firefox の既定に任せる。撮った画像は
-   * どのみち後処理で切り詰めて縮小するので支障は無い。
-   *
-   * 画面外へ動かす方法は使えない。Firefox はウィンドウ位置を画面内へ
-   * 強制的に引き戻すため、左右上のどこへ追い出してもクランプされる。
-   */
-  const WINDOW_STATE = 'minimized';
 
   /** 保存する画像の最大幅。カード幅の 2 倍程度あれば足りる。 */
   const STORE_MAX_WIDTH = 640;
@@ -232,67 +220,92 @@
    * 撮影
    * ------------------------------------------------------------------ */
 
-  function waitForLoad(tabId) {
-    return new Promise((resolve, reject) => {
-      let done = false;
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-      const finish = (fn, arg) => {
+  /**
+   * 読み込み完了を待つ。
+   * 必ず navigate の「前」に呼んでリスナーを張ること。後から張ると、
+   * 直前のページの complete を拾って早すぎる撮影になる。
+   */
+  function waitForComplete(tabId) {
+    return new Promise((resolve) => {
+      let done = false;
+      const finish = (how) => {
         if (done) return;
         done = true;
         browser.tabs.onUpdated.removeListener(onUpdated);
         clearTimeout(timer);
-        fn(arg);
+        resolve(how);
       };
-
       const onUpdated = (updatedTabId, changeInfo) => {
-        if (updatedTabId === tabId && changeInfo.status === 'complete') {
-          finish(resolve);
-        }
+        if (updatedTabId === tabId && changeInfo.status === 'complete') finish('complete');
       };
-
-      const timer = setTimeout(
-        () => finish(reject, new Error('load timeout')),
-        LOAD_TIMEOUT_MS
-      );
-
+      const timer = setTimeout(() => finish('timeout'), LOAD_TIMEOUT_MS);
       browser.tabs.onUpdated.addListener(onUpdated);
-
-      // リスナー登録前に読み終わっていた場合の取りこぼしを拾う
-      browser.tabs.get(tabId).then(
-        (tab) => {
-          if (tab && tab.status === 'complete') finish(resolve);
-        },
-        () => {}
-      );
     });
   }
 
-  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  /* ------------------------------------------------------------------ *
+   * 作業用タブ
+   *
+   * ウィンドウは作らない。利用者のウィンドウに非アクティブなタブを 1 枚だけ
+   * 作り、tabs.hide() でタブ一覧からも消して、それを使い回す。
+   *
+   * ウィンドウを作ると、Windows では生成時のアクティブ化を拡張機能から
+   * 抑止できない。focused:false も state:'minimized' も、一瞬の表示と
+   * フォーカス移動を防げなかった (入力中のキーを持っていかれる)。
+   * タブなら新しいウィンドウが生まれないので、この問題自体が起きない。
+   * ------------------------------------------------------------------ */
 
-  async function captureUrl(url) {
-    let windowId = null;
-    try {
-      const win = await browser.windows.create({
-        url,
-        type: 'popup',
-        // 最初から最小化して開くので、一度も画面に現れない
-        state: WINDOW_STATE,
-        focused: false,
-      });
-      windowId = win.id;
-      const tab = win.tabs && win.tabs[0];
-      if (!tab) throw new Error('no tab in capture window');
+  let workerTabId = null;
 
-      await waitForLoad(tab.id);
-      await sleep(SETTLE_MS);
-
-      const raw = await browser.tabs.captureTab(tab.id, { format: 'png' });
-      return await postProcess(raw);
-    } finally {
-      if (windowId !== null) {
-        browser.windows.remove(windowId).catch(() => {});
+  async function getWorkerTab() {
+    if (workerTabId !== null) {
+      try {
+        await browser.tabs.get(workerTabId);
+        return workerTabId;
+      } catch (e) {
+        workerTabId = null; // 利用者に閉じられた等
       }
     }
+
+    const windows = await browser.windows.getAll({ windowTypes: ['normal'] });
+    if (windows.length === 0) throw new Error('no browser window to host the capture tab');
+
+    // about:blank で作ってから目的の URL へ移動する。こうすると
+    // 新規作成と使い回しで待ち方が同じになり、取りこぼしが無い。
+    const tab = await browser.tabs.create({ url: 'about:blank', active: false });
+    workerTabId = tab.id;
+
+    if (browser.tabs.hide) {
+      try {
+        await browser.tabs.hide(workerTabId);
+      } catch (e) {
+        // tabHide 権限が無い場合。タブ一覧には残るが撮影自体は行える。
+        console.warn('follient: タブを隠せませんでした', e && e.message ? e.message : e);
+      }
+    }
+    return workerTabId;
+  }
+
+  /** 待ち行列が空になったら片付ける。隠しタブを残したままにしない。 */
+  async function releaseWorkerTab() {
+    if (workerTabId === null) return;
+    const id = workerTabId;
+    workerTabId = null;
+    await browser.tabs.remove(id).catch(() => {});
+  }
+
+  async function captureUrl(url) {
+    const tabId = await getWorkerTab();
+
+    const loaded = waitForComplete(tabId); // navigate より先に張る
+    await browser.tabs.update(tabId, { url });
+    await loaded;
+    await sleep(SETTLE_MS);
+
+    const raw = await browser.tabs.captureTab(tabId, { format: 'png' });
+    return await postProcess(raw);
   }
 
   /* ------------------------------------------------------------------ *
@@ -375,6 +388,7 @@
       }
     } finally {
       running = false;
+      releaseWorkerTab();
     }
   }
 
