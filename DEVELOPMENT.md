@@ -34,6 +34,7 @@ AMO で署名した番号は**永久に消費される**。同じ番号での再
 | `src/capture.js` | OGP 画像が無いページのスクリーンショット取得 |
 | `tools/build-xpi.js` | 配布用 XPI の作成 |
 | `tools/sign.js` | AMO 署名 |
+| `tools/fetch-signed.js` | 署名済み XPI の取得のみやり直す |
 | `tools/make-icons.js` | アイコン PNG の生成 |
 | `tools/make-test-build.js` | 動作テスト用ビルドの作成 |
 | `tools/seed-bookmarks.js` | テスト用ブックマークの投入（製品には含めない） |
@@ -174,6 +175,23 @@ node tools/sign.js
 
 `tools/sign.js` は `manifest.json` と `src/` だけを一時ディレクトリにコピー
 してから署名する。`--ignore-files` に日本語ファイル名を渡さずに済ませるため。
+
+### 署名済み XPI の取得だけやり直す
+
+`sign.js` はアップロード → 署名待ち → ダウンロード の順に進む。アップロードが
+済んだ後にダウンロードだけ失敗する (端末が閉じた、通信が切れた) ことがある。
+その状態で `sign.js` を再実行すると `Version X already exists` で弾かれるが、
+**バージョンを上げる必要は無い**。署名はできているので、取得だけやり直す。
+
+```powershell
+$env:AMO_JWT_ISSUER = "user:12345:67"
+$env:AMO_JWT_SECRET = "..."
+node tools/fetch-signed.js          # manifest のバージョン
+node tools/fetch-signed.js 2.0.0    # 明示する場合
+```
+
+AMO は未公開 (unlisted) のアドオンに対し、資格情報が通らない場合も 401 ではなく
+404 を返す。404 が出たら「バージョンが無い」と「認証が通っていない」の両方を疑う。
 
 ### アイコン
 
