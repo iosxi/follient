@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "follient",
-  "version": "11.0.0",
+  "version": "12.0.0",
   "description": "ブックマークをPinterest風のタイルで表示する新しいタブ。",
   "browser_specific_settings": {
     "gecko": {
@@ -17,7 +17,8 @@
   "permissions": [
     "bookmarks",
     "storage",
-    "<all_urls>",
+    "http://*/*",
+    "https://*/*",
     "tabHide"
   ],
   "chrome_url_overrides": {
