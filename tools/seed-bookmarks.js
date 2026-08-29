@@ -79,6 +79,15 @@
       ],
     },
     {
+      // og:image がページのかなり後ろにある例。読み込み上限の検証用。
+      title: 'YouTube',
+      children: [
+        { title: 'YT トップ', url: 'https://www.youtube.com/' },
+        { title: 'YT 視聴ページ', url: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ' },
+        { title: 'youtu.be 短縮', url: 'https://youtu.be/dQw4w9WgXcQ' },
+      ],
+    },
+    {
       // 2xx で返らない URL。状態タイルの表示を確かめる。
       title: 'エラー',
       children: [

@@ -12,7 +12,17 @@
   const CACHE_PREFIX = 'og:';
   const CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7日
   const FETCH_TIMEOUT_MS = 8000;
-  const MAX_BYTES = 512 * 1024; // <head> が読めれば十分なので先頭のみ
+  /**
+   * 1 ページから読む上限。
+   *
+   * 「<head> が読めれば十分」と決め打つと足りない。YouTube の視聴ページは
+   * og:image が 680KB 付近にあり、512KB で切ると読めなかった (トップページは
+   * 6KB 付近なので通っていた)。
+   *
+   * 上限は「これより大きいページ」にしか影響しない。普通のページは末尾まで
+   * 読んで終わるので、上げても取得量は変わらない。
+   */
+  const MAX_BYTES = 2 * 1024 * 1024;
   const MAX_CONCURRENCY = 4;
 
   /** URL -> Promise。同一 URL の多重取得を防ぐ。 */
