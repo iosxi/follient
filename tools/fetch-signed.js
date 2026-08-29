@@ -54,7 +54,7 @@ function makeToken() {
       iss: issuer,
       jti: crypto.randomBytes(16).toString('hex'),
       iat: issuedAt,
-      exp: issuedAt + 300,
+      exp: issuedAt + 120,
     })
   );
   const signature = b64(
@@ -165,14 +165,26 @@ async function main() {
     process.exit(1);
   }
 
+  const body = Buffer.from(await download.arrayBuffer());
+
+  // AMO は署名が済む前でもアップロードした無署名のファイルを返すことがある。
+  // 署名の有無を中身で確かめ、無署名なら保存しない (配ってしまわないため)。
+  if (body.indexOf('META-INF/mozilla.rsa') === -1) {
+    console.error('');
+    console.error('取得したファイルは署名されていません (META-INF/mozilla.rsa が無い)。');
+    console.error('AMO 側の署名がまだ終わっていない可能性があります。');
+    console.error('数分おいて、もう一度 node tools/fetch-signed.js を実行してください。');
+    process.exit(1);
+  }
+
   const name =
     path.basename(new URL(downloadUrl).pathname) || 'follient-' + wantedVersion + '-signed.xpi';
   const outFile = path.join(distDir, name);
   fs.mkdirSync(distDir, { recursive: true });
-  fs.writeFileSync(outFile, Buffer.from(await download.arrayBuffer()));
+  fs.writeFileSync(outFile, body);
 
   console.log(
-    '保存しました: ' + path.relative(root, outFile) + ' (' + fs.statSync(outFile).size + ' bytes)'
+    '保存しました: ' + path.relative(root, outFile) + ' (' + fs.statSync(outFile).size + ' bytes, 署名あり)'
   );
 }
 

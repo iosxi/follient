@@ -134,9 +134,122 @@
     return null;
   }
 
-  function parseMetadata(html, finalUrl) {
-    const doc = new DOMParser().parseFromString(html, 'text/html');
+  /** JSON-LD の image は文字列・配列・オブジェクトのいずれもあり得る。 */
+  function flattenImage(image) {
+    if (!image) return null;
+    if (typeof image === 'string') return image;
+    if (Array.isArray(image)) {
+      for (const item of image) {
+        const found = flattenImage(item);
+        if (found) return found;
+      }
+      return null;
+    }
+    if (typeof image === 'object' && typeof image.url === 'string') return image.url;
+    return null;
+  }
 
+  function pickJsonLdImage(value, depth) {
+    if (!value || depth > 4 || typeof value !== 'object') return null;
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        const found = pickJsonLdImage(item, depth + 1);
+        if (found) return found;
+      }
+      return null;
+    }
+    const direct = flattenImage(value.image || value.thumbnailUrl || value.logo);
+    if (direct) return direct;
+    for (const key of ['@graph', 'mainEntity', 'itemListElement']) {
+      const found = pickJsonLdImage(value[key], depth + 1);
+      if (found) return found;
+    }
+    return null;
+  }
+
+  function imageFromJsonLd(doc) {
+    const nodes = doc.querySelectorAll('script[type="application/ld+json"]');
+    for (const node of nodes) {
+      let data;
+      try {
+        data = JSON.parse(node.textContent);
+      } catch (e) {
+        continue; // 壊れた JSON-LD は珍しくない
+      }
+      const found = pickJsonLdImage(data, 0);
+      if (found) return found;
+    }
+    return null;
+  }
+
+  /** 本文中の大きめの画像。大きさが属性で分かるものだけを見る。 */
+  function imageFromBody(doc) {
+    const images = doc.querySelectorAll('img[src]');
+    for (const img of images) {
+      const width = parseInt(img.getAttribute('width') || '0', 10);
+      const height = parseInt(img.getAttribute('height') || '0', 10);
+      if (width >= 200 && height >= 120) return img.getAttribute('src');
+    }
+    return null;
+  }
+
+  /** ページが名乗っている RSS / Atom フィードの場所。 */
+  function findFeedUrl(doc, baseUrl) {
+    const links = doc.querySelectorAll('link[rel~="alternate"][href]');
+    for (const link of links) {
+      const type = (link.getAttribute('type') || '').toLowerCase();
+      if (type.indexOf('rss') !== -1 || type.indexOf('atom') !== -1) {
+        return absolutize(link.getAttribute('href'), baseUrl);
+      }
+    }
+    return null;
+  }
+
+  /**
+   * RSS / Atom から画像を拾う。
+   * media:thumbnail のような名前空間つきの要素も拾うため、名前空間は問わない。
+   */
+  function imageFromFeedDoc(doc, baseUrl) {
+    const attrOf = (tag, attr) => {
+      const nodes = doc.getElementsByTagNameNS('*', tag);
+      for (const node of nodes) {
+        const value = node.getAttribute(attr);
+        if (value) return value;
+      }
+      return null;
+    };
+
+    const media = attrOf('thumbnail', 'url') || attrOf('content', 'url');
+    if (media) return absolutize(media, baseUrl);
+
+    const enclosures = doc.getElementsByTagNameNS('*', 'enclosure');
+    for (const node of enclosures) {
+      const type = (node.getAttribute('type') || '').toLowerCase();
+      const href = node.getAttribute('url') || node.getAttribute('href');
+      if (href && type.indexOf('image/') === 0) return absolutize(href, baseUrl);
+    }
+
+    // RSS の <image><url>、Atom の <logo> / <icon>
+    for (const tag of ['url', 'logo', 'icon']) {
+      const nodes = doc.getElementsByTagNameNS('*', tag);
+      for (const node of nodes) {
+        const text = (node.textContent || '').trim();
+        if (text && /^(https?:|\/)/i.test(text)) return absolutize(text, baseUrl);
+      }
+    }
+
+    // 記事本文の HTML に埋まっている img
+    for (const tag of ['encoded', 'description', 'summary', 'content']) {
+      const nodes = doc.getElementsByTagNameNS('*', tag);
+      for (const node of nodes) {
+        const match = /<img[^>]+src=["']([^"']+)["']/i.exec(node.textContent || '');
+        if (match) return absolutize(match[1], baseUrl);
+      }
+    }
+    return null;
+  }
+
+  function parseMetadata(doc, finalUrl) {
     const title =
       metaContent(doc, [
         'meta[property="og:title"]',
@@ -145,13 +258,33 @@
       ]) ||
       (doc.querySelector('title') ? doc.querySelector('title').textContent.trim() : null);
 
-    const rawImage = metaContent(doc, [
+    // OGP を第一に、無ければ順に代わりを探す。撮影はここで見つからなかった
+    // ときの最後の手段なので、ここで拾えるほど安全で安上がりになる。
+    let source = 'og';
+    let rawImage = metaContent(doc, [
       'meta[property="og:image:secure_url"]',
       'meta[property="og:image"]',
       'meta[name="og:image"]',
       'meta[name="twitter:image"]',
       'meta[name="twitter:image:src"]',
     ]);
+
+    if (!rawImage) {
+      const link = doc.querySelector('link[rel="image_src"][href]');
+      if (link) {
+        rawImage = link.getAttribute('href');
+        source = 'image_src';
+      }
+    }
+    if (!rawImage) {
+      rawImage = imageFromJsonLd(doc);
+      if (rawImage) source = 'json-ld';
+    }
+    if (!rawImage) {
+      rawImage = imageFromBody(doc);
+      if (rawImage) source = 'img';
+    }
+    if (!rawImage) source = null;
 
     const description = metaContent(doc, [
       'meta[property="og:description"]',
@@ -163,12 +296,14 @@
     return {
       title: title || null,
       image: absolutize(rawImage, finalUrl),
+      imageSource: source,
       description: description || null,
       siteName: siteName || null,
     };
   }
 
-  async function fetchMetadata(url) {
+  /** 本文を取ってきて文字列にする。HTML でもフィードでも使う。 */
+  async function fetchText(url, accept, typePattern) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
     try {
@@ -177,21 +312,55 @@
         redirect: 'follow',
         cache: 'force-cache',
         signal: controller.signal,
-        headers: { Accept: 'text/html,application/xhtml+xml' },
+        headers: { Accept: accept },
       });
       if (!response.ok) throw new Error('HTTP ' + response.status);
 
       const contentType = response.headers.get('content-type') || '';
-      if (contentType && !/text\/html|application\/xhtml/i.test(contentType)) {
-        throw new Error('not html: ' + contentType);
+      if (contentType && typePattern && !typePattern.test(contentType)) {
+        throw new Error('unexpected type: ' + contentType);
       }
 
       const buffer = await readCapped(response);
-      const html = decodeBody(buffer, contentType);
-      return parseMetadata(html, response.url || url);
+      return { text: decodeBody(buffer, contentType), finalUrl: response.url || url };
     } finally {
       clearTimeout(timer);
     }
+  }
+
+  async function fetchMetadata(url) {
+    const page = await fetchText(
+      url,
+      'text/html,application/xhtml+xml',
+      /text\/html|application\/xhtml/i
+    );
+    const doc = new DOMParser().parseFromString(page.text, 'text/html');
+    const meta = parseMetadata(doc, page.finalUrl);
+    if (meta.image) return meta;
+
+    // ページ自体に画像が無くても、フィードなら持っていることが多い。
+    // 撮影に回すより、こちらのほうが安全で速い。
+    const feedUrl = findFeedUrl(doc, page.finalUrl);
+    if (!feedUrl) return meta;
+
+    try {
+      const feed = await fetchText(
+        feedUrl,
+        'application/rss+xml,application/atom+xml,application/xml,text/xml',
+        /xml/i
+      );
+      const feedDoc = new DOMParser().parseFromString(feed.text, 'application/xml');
+      if (!feedDoc.querySelector('parsererror')) {
+        const image = imageFromFeedDoc(feedDoc, feed.finalUrl);
+        if (image) {
+          meta.image = image;
+          meta.imageSource = 'feed';
+        }
+      }
+    } catch (e) {
+      // フィードが無い/壊れていても、ページ本体の情報は返す
+    }
+    return meta;
   }
 
   async function getMetadata(url) {

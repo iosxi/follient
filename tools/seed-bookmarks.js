@@ -56,6 +56,16 @@
       ],
     },
     {
+      // 実際に「タブが増えてキャプチャも採れない」と報告のあった URL。
+      // OGP が無いページから、フィード等で画像を拾えるかを見るためのもの。
+      title: 'RAWKUMA',
+      children: [
+        { title: 'RAWKUMA - latest', url: 'https://rawkuma.net/latest-update/?the_page=1' },
+        { title: 'RAWKUMA - bouken', url: 'https://rawkuma.net/manga/bouken-shinai-watashi-no-isekai-manual/' },
+        { title: 'RAWKUMA - isekai', url: 'https://rawkuma.net/manga/isekai-de-cheat-skill-wo-te-ni-shita-ore-wa-genjitsu-sekai-wo-mo-musou-suru-girls-side-kareinaru-otome-tachi-no-bouken-wa-sekai-wo-kaeta/' },
+      ],
+    },
+    {
       // OGP 画像を持たないページばかりのフォルダ。スクリーンショット代替と、
       // 同一ホストが並んだときの間隔制御を確かめるためのもの。
       title: 'OGPなし',

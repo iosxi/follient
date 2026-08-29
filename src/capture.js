@@ -267,42 +267,110 @@
 
   let workerTabId = null;
 
-  async function getWorkerTab() {
-    if (workerTabId !== null) {
-      try {
-        await browser.tabs.get(workerTabId);
-        return workerTabId;
-      } catch (e) {
-        workerTabId = null; // 利用者に閉じられた等
-      }
+  /** 撮影に使用中か。タブが消えたとき、自分の後始末か外部かを見分ける。 */
+  let workerTabInUse = false;
+
+  /** 一度でも安全でないことが起きたら、この起動中はもう撮影しない。 */
+  let disabledReason = null;
+
+  function disableCapturing(reason) {
+    if (disabledReason) return;
+    disabledReason = reason;
+    queue.length = 0;
+    queued.clear();
+    console.warn('follient: 撮影を停止しました (' + reason + ')');
+  }
+
+  /**
+   * 作業用タブが「隠されていて、選択もされていない」ことを確かめる。
+   *
+   * タブは利用者のウィンドウの中にあるので、他の拡張機能から見えている。
+   * タブを操作する拡張機能 (コンテナー、重複タブ削除、セッション管理など) が
+   * 表に出したり、選択したり、閉じたりすることがある。撮影の前後で必ず確認し、
+   * 少しでも怪しければ撮影自体をやめる。利用者の画面に見知らぬページを
+   * 出してしまうより、サムネイルを諦めるほうがましなため。
+   */
+  async function assertInvisible(tabId) {
+    let tab;
+    try {
+      tab = await browser.tabs.get(tabId);
+    } catch (e) {
+      throw new Error('capture tab disappeared');
     }
+    if (!tab.hidden) throw new Error('capture tab became visible');
+    if (tab.active) throw new Error('capture tab became active');
+    return tab;
+  }
+
+  /** 撮影のたびに 1 枚作る。使い回さないので、居座るタブが生まれない。 */
+  async function openWorkerTab() {
+    if (!browser.tabs.hide) throw new Error('tabs.hide unavailable');
 
     const windows = await browser.windows.getAll({ windowTypes: ['normal'] });
-    if (windows.length === 0) throw new Error('no browser window to host the capture tab');
+    if (windows.length === 0) throw new Error('no browser window');
 
-    // about:blank で作ってから目的の URL へ移動する。こうすると
-    // 新規作成と使い回しで待ち方が同じになり、取りこぼしが無い。
     const tab = await browser.tabs.create({ url: 'about:blank', active: false });
     workerTabId = tab.id;
+    workerTabInUse = true;
 
-    if (browser.tabs.hide) {
+    // ここから先で失敗したら、作ったタブを必ず閉じてから投げる。
+    // 閉じ忘れると、隠せなかったタブが利用者の画面に residue として残る。
+    try {
       try {
         await browser.tabs.hide(workerTabId);
       } catch (e) {
-        // tabHide 権限が無い場合。タブ一覧には残るが撮影自体は行える。
-        console.warn('follient: タブを隠せませんでした', e && e.message ? e.message : e);
+        throw new Error('tabs.hide failed: ' + (e && e.message ? e.message : e));
       }
+      // 隠せたと言われても実際に隠れているか確かめる
+      await assertInvisible(workerTabId);
+      return workerTabId;
+    } catch (e) {
+      await closeWorkerTab();
+      throw e;
     }
-    return workerTabId;
   }
 
-  /** 待ち行列が空になったら片付ける。隠しタブを残したままにしない。 */
-  async function releaseWorkerTab() {
-    if (workerTabId === null) return;
+  async function closeWorkerTab() {
     const id = workerTabId;
     workerTabId = null;
-    await browser.tabs.remove(id).catch(() => {});
+    workerTabInUse = false; // これより後の onRemoved は自分の後始末
+    if (id !== null) await browser.tabs.remove(id).catch(() => {});
   }
+
+  /** 作業用タブが選択されてしまったら、直ちにやめる。 */
+  browser.tabs.onActivated.addListener((info) => {
+    if (workerTabId !== null && info.tabId === workerTabId) {
+      disableCapturing('capture tab was activated');
+      closeWorkerTab();
+    }
+  });
+
+  /**
+   * 撮影中のページが自分で開いたタブを閉じる。
+   *
+   * 隠しタブでもページの JavaScript は普通に動く。広告の多いサイトは
+   * ポップアップで別のタブを開くことがあり、それは follient が作ったタブでは
+   * ないので隠されておらず、選択されることもある。openerTabId が作業用タブと
+   * 一致するものだけを閉じるので、利用者のタブを閉じてしまうことはない。
+   */
+  let openedByPage = false;
+
+  browser.tabs.onCreated.addListener((tab) => {
+    if (!workerTabInUse || workerTabId === null) return;
+    if (tab.openerTabId !== workerTabId) return;
+    openedByPage = true;
+    console.warn('follient: 撮影中のページが開いたタブを閉じました');
+    browser.tabs.remove(tab.id).catch(() => {});
+  });
+
+  /** 自分以外に閉じられたら、作り直さずにやめる。無限にタブが増えるのを防ぐ。 */
+  browser.tabs.onRemoved.addListener((tabId) => {
+    if (workerTabInUse && workerTabId !== null && tabId === workerTabId) {
+      workerTabId = null;
+      workerTabInUse = false;
+      disableCapturing('capture tab was closed by something else');
+    }
+  });
 
   /**
    * 切り出す範囲を決める。
@@ -356,22 +424,33 @@
   }
 
   async function captureUrl(url) {
-    const tabId = await getWorkerTab();
+    openedByPage = false;
+    const tabId = await openWorkerTab();
+    try {
+      const loaded = waitForComplete(tabId); // navigate より先に張る
+      await browser.tabs.update(tabId, { url });
+      await loaded;
 
-    const loaded = waitForComplete(tabId); // navigate より先に張る
-    await browser.tabs.update(tabId, { url });
-    await loaded;
-    await sleep(SETTLE_MS);
+      // 読み込みの最中に横取りされていないか
+      await assertInvisible(tabId);
+      await sleep(SETTLE_MS);
+      await assertInvisible(tabId);
 
-    const rect = await contentRect(tabId);
-    const options = { format: 'png' };
-    if (rect) {
-      options.rect = rect;
-      options.scale = 1;
+      // ポップアップを出すサイトは、以後この URL を撮らない
+      if (openedByPage) throw new Error('page opened tabs on its own');
+
+      const rect = await contentRect(tabId);
+      const options = { format: 'png' };
+      if (rect) {
+        options.rect = rect;
+        options.scale = 1;
+      }
+
+      const raw = await browser.tabs.captureTab(tabId, options);
+      return await postProcess(raw);
+    } finally {
+      await closeWorkerTab();
     }
-
-    const raw = await browser.tabs.captureTab(tabId, options);
-    return await postProcess(raw);
   }
 
   /* ------------------------------------------------------------------ *
@@ -438,10 +517,18 @@
         try {
           image = await captureUrl(url);
         } catch (e) {
-          console.warn(
-            'follient: screenshot failed for ' + url,
-            e && e.message ? e.message : String(e)
-          );
+          const reason = e && e.message ? e.message : String(e);
+          console.warn('follient: screenshot failed for ' + url, reason);
+
+          // 作業用タブが表に出た/選択された/外から閉じられた場合は、
+          // 作り直さずに撮影そのものをやめる。同じことを繰り返して
+          // 利用者の画面にタブを撒き散らさないため。
+          if (
+            reason.indexOf('capture tab') === 0 ||
+            reason.indexOf('tabs.hide') === 0
+          ) {
+            disableCapturing(reason);
+          }
         }
 
         await writeShotCache(url, image);
@@ -454,7 +541,8 @@
       }
     } finally {
       running = false;
-      releaseWorkerTab();
+      // 念のため。captureUrl が自分で閉じているので通常は何もしない。
+      closeWorkerTab();
     }
   }
 
@@ -470,6 +558,7 @@
    * ------------------------------------------------------------------ */
 
   async function requestScreenshot(url) {
+    if (disabledReason) return { image: null, disabled: true };
     if (!/^https?:\/\//i.test(url)) return { image: null };
 
     const cached = await readShotCache(url);
