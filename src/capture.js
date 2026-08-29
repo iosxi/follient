@@ -32,6 +32,24 @@
   /** 読み込み完了後、描画が落ち着くまで待つ時間。 */
   const SETTLE_MS = 1800;
 
+  /**
+   * 撮影時の拡大率。
+   *
+   * 3〜4K のウィンドウだとビューポートが 3000 CSS px 近くになり、そのまま
+   * 縮小するとカード上では 0.2 倍ほどになって何のサイトか分からなくなる。
+   * 拡大してからビューポートの一部だけを切り出すことで、ウィンドウの
+   * 大きさに関係なく同じ読みやすさになる。
+   *
+   * ズームは Firefox ではオリジン単位でしか設定できない (scope:'per-tab' は
+   * 受け付けられない)。放置すると利用者が普段そのサイトを見るときの拡大率まで
+   * 変わってしまうので、撮影後に必ず既定へ戻すこと。
+   */
+  const CAPTURE_ZOOM = 1.75;
+
+  /** 切り出すビューポートの大きさ (CSS ピクセル)。カード向けに横長すぎない比率にする。 */
+  const CAPTURE_WIDTH = 1100;
+  const CAPTURE_HEIGHT = 690;
+
   /** 保存する画像の最大幅。カード幅の 2 倍程度あれば足りる。 */
   const STORE_MAX_WIDTH = 640;
   const STORE_QUALITY = 0.72;
@@ -296,16 +314,90 @@
     await browser.tabs.remove(id).catch(() => {});
   }
 
+  /**
+   * 切り出す範囲を決める。ビューポートより大きく要求すると破綻するので、
+   * 実寸を測って収める。測れない場合は範囲指定なしで撮る。
+   */
+  async function viewportRect(tabId) {
+    try {
+      const result = await browser.tabs.executeScript(tabId, {
+        code: 'JSON.stringify([window.innerWidth, window.innerHeight])',
+      });
+      const size = JSON.parse(result[0]);
+      const width = Math.min(CAPTURE_WIDTH, size[0]);
+      const height = Math.min(CAPTURE_HEIGHT, size[1]);
+      if (!(width > 0) || !(height > 0)) return null;
+      return { x: 0, y: 0, width, height };
+    } catch (e) {
+      return null;
+    }
+  }
+
+  /**
+   * 撮影前のズーム状態を控える。
+   *
+   * Firefox はサイト (オリジン) ごとの拡大率を永続保存している。利用者が
+   * そのサイトに設定していた値を壊さないよう、撮影前の値を必ず控えて戻す。
+   * 既定のままだったのか明示設定だったのかは getZoom だけでは分からないので、
+   * getZoomSettings の defaultZoomFactor と比べて判断する。
+   */
+  async function readZoomState(tabId) {
+    try {
+      const factor = await browser.tabs.getZoom(tabId);
+      let fallback = null;
+      try {
+        const settings = await browser.tabs.getZoomSettings(tabId);
+        fallback = settings && settings.defaultZoomFactor;
+      } catch (e) {
+        /* 既定値が取れなくても、控えた値そのものは戻せる */
+      }
+      return { factor, fallback };
+    } catch (e) {
+      return null;
+    }
+  }
+
+  /** 控えておいたズーム状態へ戻す。 */
+  async function restoreZoom(tabId, state) {
+    if (!state) return;
+    // 既定のままだった場合は 0 (既定に戻す) を渡し、明示設定を作らない。
+    const wasDefault =
+      state.fallback != null && Math.abs(state.factor - state.fallback) < 0.001;
+    try {
+      await browser.tabs.setZoom(tabId, wasDefault ? 0 : state.factor);
+    } catch (e) {
+      await browser.tabs.setZoom(tabId, state.factor).catch(() => {});
+    }
+  }
+
   async function captureUrl(url) {
     const tabId = await getWorkerTab();
+    let zoomState = null;
+    try {
+      const loaded = waitForComplete(tabId); // navigate より先に張る
+      await browser.tabs.update(tabId, { url });
+      await loaded;
 
-    const loaded = waitForComplete(tabId); // navigate より先に張る
-    await browser.tabs.update(tabId, { url });
-    await loaded;
-    await sleep(SETTLE_MS);
+      // 触る前の拡大率を控える。これを読めなかった場合は拡大もしない。
+      zoomState = await readZoomState(tabId);
+      if (zoomState) {
+        await browser.tabs.setZoom(tabId, CAPTURE_ZOOM).catch(() => {});
+      }
+      await sleep(SETTLE_MS);
 
-    const raw = await browser.tabs.captureTab(tabId, { format: 'png' });
-    return await postProcess(raw);
+      const rect = await viewportRect(tabId);
+      const options = { format: 'png' };
+      if (rect) {
+        options.rect = rect;
+        options.scale = 1;
+      }
+
+      const raw = await browser.tabs.captureTab(tabId, options);
+      return await postProcess(raw);
+    } finally {
+      // 利用者がそのサイトに設定していた拡大率を必ず元へ戻す
+      await restoreZoom(tabId, zoomState);
+    }
   }
 
   /* ------------------------------------------------------------------ *
