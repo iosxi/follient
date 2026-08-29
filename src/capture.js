@@ -33,22 +33,29 @@
   const SETTLE_MS = 1800;
 
   /**
-   * 撮影時の拡大率。
+   * 切り出す範囲 (CSS ピクセル)。
    *
-   * 3〜4K のウィンドウだとビューポートが 3000 CSS px 近くになり、そのまま
-   * 縮小するとカード上では 0.2 倍ほどになって何のサイトか分からなくなる。
-   * 拡大してからビューポートの一部だけを切り出すことで、ウィンドウの
-   * 大きさに関係なく同じ読みやすさになる。
+   * カード上での文字の大きさは「カード幅 ÷ 切り出した CSS 幅」で決まる。
+   * 3〜4K のウィンドウではビューポートが 3000 CSS px 近くになるため、
+   * 全体を撮ると 0.1 倍以下になって何のサイトか分からない。狭く切り出す。
    *
-   * ズームは Firefox ではオリジン単位でしか設定できない (scope:'per-tab' は
-   * 受け付けられない)。放置すると利用者が普段そのサイトを見るときの拡大率まで
-   * 変わってしまうので、撮影後に必ず既定へ戻すこと。
+   * ズームで何とかしようとしてはいけない。レイアウト幅が変わるだけで
+   * 文字の大きさには効かず (上の式に拡大率は出てこない)、そのうえ Firefox の
+   * ズームはオリジン単位で永続保存されるので、利用者の設定を壊す。
    */
-  const CAPTURE_ZOOM = 1.75;
+  const CAPTURE_WIDTH = 640;
+  const CAPTURE_HEIGHT = 400;
 
-  /** 切り出すビューポートの大きさ (CSS ピクセル)。カード向けに横長すぎない比率にする。 */
-  const CAPTURE_WIDTH = 1100;
-  const CAPTURE_HEIGHT = 690;
+  /** 中身を探すときに見る縦方向の範囲 (CSS ピクセル)。 */
+  const CONTENT_PROBE_HEIGHT = 900;
+
+  /**
+   * 中身の左端ちょうどから切ると文字が縁で切れる。少し手前から切り出す。
+   */
+  const CONTENT_LEFT_MARGIN = 28;
+
+  /** 上端を削った結果、これより横長にはしない。カード側の切り抜きを避けるため。 */
+  const MAX_ASPECT = 2.2;
 
   /** 保存する画像の最大幅。カード幅の 2 倍程度あれば足りる。 */
   const STORE_MAX_WIDTH = 640;
@@ -119,15 +126,19 @@
   }
 
   /**
-   * 画像の縁にある単色の余白を削る。
-   * 各辺について、その角の色と十分近い画素だけで構成される行/列を削っていく。
-   * 削りすぎると絵が壊れるので、片側あたり 40% までに制限する。
+   * 上端の単色な帯だけを削る。
+   *
+   * 切り出す範囲は contentRect が中身に合わせて選んでいるので、四辺を削る
+   * 必要はない。削りすぎると極端な横長になり、カード側の object-fit: cover が
+   * 左右を切り落として文字が欠ける (example.com で "Example Domain" が
+   * "Domain" になった)。そのため上端だけ、比率が崩れない範囲で削る。
    */
-  function findContentBox(imageData, width, height) {
+  function trimTop(imageData, width, height) {
     const data = imageData.data;
     const TOLERANCE = 12;
-    const maxTrimX = Math.floor(width * 0.4);
-    const maxTrimY = Math.floor(height * 0.4);
+    // 横長になりすぎない範囲までしか削らない
+    const minHeight = Math.ceil(width / MAX_ASPECT);
+    const maxTrim = Math.max(0, height - minHeight);
 
     const at = (x, y) => {
       const i = (y * width + x) * 4;
@@ -138,42 +149,21 @@
       Math.abs(a[1] - b[1]) <= TOLERANCE &&
       Math.abs(a[2] - b[2]) <= TOLERANCE;
 
-    const rowUniform = (y, reference) => {
-      // 端まで 1px 刻みで見る必要はないので、間引いて走査する
-      const step = Math.max(1, Math.floor(width / 160));
-      for (let x = 0; x < width; x += step) {
-        if (!near(at(x, y), reference)) return false;
-      }
-      return true;
-    };
-    const colUniform = (x, reference) => {
-      const step = Math.max(1, Math.floor(height / 160));
-      for (let y = 0; y < height; y += step) {
-        if (!near(at(x, y), reference)) return false;
-      }
-      return true;
-    };
-
+    const reference = at(0, 0);
+    const step = Math.max(1, Math.floor(width / 160));
     let top = 0;
-    const topColor = at(0, 0);
-    while (top < maxTrimY && rowUniform(top, topColor)) top += 1;
-
-    let bottom = height - 1;
-    const bottomColor = at(0, height - 1);
-    while (bottom > height - 1 - maxTrimY && rowUniform(bottom, bottomColor)) bottom -= 1;
-
-    let left = 0;
-    const leftColor = at(0, top);
-    while (left < maxTrimX && colUniform(left, leftColor)) left += 1;
-
-    let right = width - 1;
-    const rightColor = at(width - 1, top);
-    while (right > width - 1 - maxTrimX && colUniform(right, rightColor)) right -= 1;
-
-    if (right - left < 40 || bottom - top < 40) {
-      return { x: 0, y: 0, w: width, h: height };
+    while (top < maxTrim) {
+      let uniform = true;
+      for (let x = 0; x < width; x += step) {
+        if (!near(at(x, top), reference)) {
+          uniform = false;
+          break;
+        }
+      }
+      if (!uniform) break;
+      top += 1;
     }
-    return { x: left, y: top, w: right - left + 1, h: bottom - top + 1 };
+    return { x: 0, y: top, w: width, h: height - top };
   }
 
   /**
@@ -218,7 +208,7 @@
     const full = sourceCtx.getImageData(0, 0, width, height);
     if (looksBlank(full, width, height)) throw new Error('blank screenshot');
 
-    const box = findContentBox(full, width, height);
+    const box = trimTop(full, width, height);
 
     const scale = Math.min(1, STORE_MAX_WIDTH / box.w);
     const outWidth = Math.max(1, Math.round(box.w * scale));
@@ -315,89 +305,73 @@
   }
 
   /**
-   * 切り出す範囲を決める。ビューポートより大きく要求すると破綻するので、
-   * 実寸を測って収める。測れない場合は範囲指定なしで撮る。
-   */
-  async function viewportRect(tabId) {
-    try {
-      const result = await browser.tabs.executeScript(tabId, {
-        code: 'JSON.stringify([window.innerWidth, window.innerHeight])',
-      });
-      const size = JSON.parse(result[0]);
-      const width = Math.min(CAPTURE_WIDTH, size[0]);
-      const height = Math.min(CAPTURE_HEIGHT, size[1]);
-      if (!(width > 0) || !(height > 0)) return null;
-      return { x: 0, y: 0, width, height };
-    } catch (e) {
-      return null;
-    }
-  }
-
-  /**
-   * 撮影前のズーム状態を控える。
+   * 切り出す範囲を決める。
    *
-   * Firefox はサイト (オリジン) ごとの拡大率を永続保存している。利用者が
-   * そのサイトに設定していた値を壊さないよう、撮影前の値を必ず控えて戻す。
-   * 既定のままだったのか明示設定だったのかは getZoom だけでは分からないので、
-   * getZoomSettings の defaultZoomFactor と比べて判断する。
+   * 幅の広いウィンドウでは、中身が中央に寄せられていて左右が余白ということが
+   * 多い。左上を機械的に切ると余白しか写らないので、上の方に実際に描かれて
+   * いる要素の左端を調べて、そこから切り出す。
    */
-  async function readZoomState(tabId) {
+  async function contentRect(tabId) {
+    // ページ側で走らせる。全幅いっぱいの要素は背景や枠であって中身の
+    // 目印にならないので除く。要素数の多いページで重くならないよう上限を置く。
+    const code =
+      '(function () {' +
+      '  var W = window.innerWidth, H = window.innerHeight;' +
+      '  var minX = Infinity;' +
+      '  var all = document.body ? document.body.getElementsByTagName("*") : [];' +
+      '  var limit = Math.min(all.length, 4000);' +
+      '  for (var i = 0; i < limit; i++) {' +
+      '    var r = all[i].getBoundingClientRect();' +
+      '    if (r.top > ' + CONTENT_PROBE_HEIGHT + ' || r.bottom < 0) continue;' +
+      '    if (r.width < 40 || r.height < 12) continue;' +
+      '    if (r.width > W * 0.97) continue;' +
+      '    if (r.left < 0) continue;' +
+      '    if (r.left < minX) minX = r.left;' +
+      '  }' +
+      '  return JSON.stringify([W, H, isFinite(minX) ? minX : 0]);' +
+      '})()';
+
     try {
-      const factor = await browser.tabs.getZoom(tabId);
-      let fallback = null;
-      try {
-        const settings = await browser.tabs.getZoomSettings(tabId);
-        fallback = settings && settings.defaultZoomFactor;
-      } catch (e) {
-        /* 既定値が取れなくても、控えた値そのものは戻せる */
-      }
-      return { factor, fallback };
+      const result = await browser.tabs.executeScript(tabId, { code });
+      const parsed = JSON.parse(result[0]);
+      const viewWidth = parsed[0];
+      const viewHeight = parsed[1];
+      let left = parsed[2];
+
+      if (!(viewWidth > 0) || !(viewHeight > 0)) return null;
+
+      // 中身の縁で文字が切れないよう少し手前から。右にはみ出す場合は戻す。
+      left = Math.max(0, left - CONTENT_LEFT_MARGIN);
+      left = Math.min(left, Math.max(0, viewWidth - CAPTURE_WIDTH));
+
+      return {
+        x: Math.round(left),
+        y: 0,
+        width: Math.round(Math.min(CAPTURE_WIDTH, viewWidth)),
+        height: Math.round(Math.min(CAPTURE_HEIGHT, viewHeight)),
+      };
     } catch (e) {
       return null;
-    }
-  }
-
-  /** 控えておいたズーム状態へ戻す。 */
-  async function restoreZoom(tabId, state) {
-    if (!state) return;
-    // 既定のままだった場合は 0 (既定に戻す) を渡し、明示設定を作らない。
-    const wasDefault =
-      state.fallback != null && Math.abs(state.factor - state.fallback) < 0.001;
-    try {
-      await browser.tabs.setZoom(tabId, wasDefault ? 0 : state.factor);
-    } catch (e) {
-      await browser.tabs.setZoom(tabId, state.factor).catch(() => {});
     }
   }
 
   async function captureUrl(url) {
     const tabId = await getWorkerTab();
-    let zoomState = null;
-    try {
-      const loaded = waitForComplete(tabId); // navigate より先に張る
-      await browser.tabs.update(tabId, { url });
-      await loaded;
 
-      // 触る前の拡大率を控える。これを読めなかった場合は拡大もしない。
-      zoomState = await readZoomState(tabId);
-      if (zoomState) {
-        await browser.tabs.setZoom(tabId, CAPTURE_ZOOM).catch(() => {});
-      }
-      await sleep(SETTLE_MS);
+    const loaded = waitForComplete(tabId); // navigate より先に張る
+    await browser.tabs.update(tabId, { url });
+    await loaded;
+    await sleep(SETTLE_MS);
 
-      const rect = await viewportRect(tabId);
-      const options = { format: 'png' };
-      if (rect) {
-        options.rect = rect;
-        options.scale = 1;
-      }
-
-      const raw = await browser.tabs.captureTab(tabId, options);
-      return await postProcess(raw);
-    } finally {
-      // 利用者がそのサイトに設定していた拡大率を必ず元へ戻す
-      await restoreZoom(tabId, zoomState);
+    const rect = await contentRect(tabId);
+    const options = { format: 'png' };
+    if (rect) {
+      options.rect = rect;
+      options.scale = 1;
     }
+
+    const raw = await browser.tabs.captureTab(tabId, options);
+    return await postProcess(raw);
   }
 
   /* ------------------------------------------------------------------ *
