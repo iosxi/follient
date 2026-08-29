@@ -265,6 +265,17 @@
    * タブなら新しいウィンドウが生まれないので、この問題自体が起きない。
    * ------------------------------------------------------------------ */
 
+  /** 設定。撮影そのものを止められるようにする。 */
+  let settings = Object.assign({}, FOLLIENT_DEFAULTS);
+  follientLoadSettings().then((loaded) => {
+    settings = loaded;
+  });
+  browser.storage.onChanged.addListener((changes, area) => {
+    if (area === 'local' && changes.settings) {
+      settings = Object.assign({}, FOLLIENT_DEFAULTS, changes.settings.newValue || {});
+    }
+  });
+
   let workerTabId = null;
 
   /** 撮影に使用中か。タブが消えたとき、自分の後始末か外部かを見分ける。 */
@@ -558,6 +569,7 @@
    * ------------------------------------------------------------------ */
 
   async function requestScreenshot(url) {
+    if (!settings.sourceCapture) return { image: null, disabled: true };
     if (disabledReason) return { image: null, disabled: true };
     if (!/^https?:\/\//i.test(url)) return { image: null };
 

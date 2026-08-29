@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <title>follient の設定</title>
+    <link rel="stylesheet" href="options.css" />
+  </head>
+  <body>
+    <h1>サムネイルの取得方法</h1>
+    <p class="lead">
+      カードの画像は、上から順に試して最初に見つかったものを使います。
+      不要な方法は外せます。下にあるものほど時間がかかり、
+      いちばん下の「撮影」だけはページを実際に開きます。
+    </p>
+
+    <ul class="sources" id="sources">
+      <li>
+        <label>
+          <input type="checkbox" data-key="sourceOg" />
+          <span class="name">1. OGP 画像</span>
+          <span class="note">ページが自分で用意している見出し画像 (og:image / twitter:image)</span>
+        </label>
+      </li>
+      <li>
+        <label>
+          <input type="checkbox" data-key="sourceImageSrc" />
+          <span class="name">2. image_src リンク</span>
+          <span class="note">古い形式だが今も使われている代表画像の指定</span>
+        </label>
+      </li>
+      <li>
+        <label>
+          <input type="checkbox" data-key="sourceJsonLd" />
+          <span class="name">3. 構造化データ (JSON-LD)</span>
+          <span class="note">検索エンジン向けの情報に含まれる画像</span>
+        </label>
+      </li>
+      <li>
+        <label>
+          <input type="checkbox" data-key="sourceFeed" />
+          <span class="name">4. RSS / Atom フィード</span>
+          <span class="note">ページが持つフィードを読み、その中の画像を使う</span>
+        </label>
+      </li>
+      <li>
+        <label>
+          <input type="checkbox" data-key="sourceBodyImg" />
+          <span class="name">5. 本文中の大きな画像</span>
+          <span class="note">大きさが分かる画像のうち、十分大きいものを選ぶ</span>
+        </label>
+      </li>
+      <li class="capture">
+        <label>
+          <input type="checkbox" data-key="sourceCapture" />
+          <span class="name">6. ページを開いて撮影</span>
+          <span class="note">
+            隠しタブでページを読み込み、見た目を撮ります。ここまでで何も
+            見つからなかったときだけ行います。タブを操作する他の拡張機能と
+            相性が悪いことがあり、その場合 follient は自動で撮影をやめます。
+          </span>
+        </label>
+      </li>
+    </ul>
+
+    <p class="saved" id="saved" hidden>保存しました</p>
+    <script src="defaults.js"></script>
+    <script src="options.js"></script>
+  </body>
+</html>

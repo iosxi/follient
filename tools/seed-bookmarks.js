@@ -78,6 +78,17 @@
         { title: 'Example', url: 'https://example.com/' },
       ],
     },
+    {
+      // 2xx で返らない URL。状態タイルの表示を確かめる。
+      title: 'エラー',
+      children: [
+        { title: '404 のページ', url: 'https://httpbin.org/status/404' },
+        { title: '403 のページ', url: 'https://httpbin.org/status/403' },
+        { title: '500 のページ', url: 'https://httpbin.org/status/500' },
+        { title: '503 のページ', url: 'https://httpbin.org/status/503' },
+        { title: '存在しないドメイン', url: 'https://follient-test-nowhere.invalid/' },
+      ],
+    },
     { title: 'Mozilla', url: 'https://www.mozilla.org/ja/' },
     { title: 'Firefox', url: 'https://www.mozilla.org/ja/firefox/new/' },
     { title: 'Wikipedia', url: 'https://ja.wikipedia.org/' },

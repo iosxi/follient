@@ -125,6 +125,57 @@ function requestScreenshot(url) {
     .catch(() => ({ image: null }));
 }
 
+/**
+ * 2xx で応答しなかったページは、画像の代わりに状態を出す。
+ * 消えたブックマークがひと目で分かるほうが、白いカードより役に立つ。
+ */
+const STATUS_LABELS = {
+  400: '不正なリクエスト',
+  401: '認証が必要',
+  403: 'アクセスできません',
+  404: 'ページがありません',
+  408: 'タイムアウト',
+  410: '削除されました',
+  429: 'アクセスが多すぎます',
+  451: '法的理由で見られません',
+  500: 'サーバーエラー',
+  502: 'ゲートウェイエラー',
+  503: '一時的に使えません',
+  504: 'ゲートウェイタイムアウト',
+};
+
+function statusLabel(status, kind) {
+  if (status === 0) return kind === 'timeout' ? '応答がありません' : '接続できません';
+  if (STATUS_LABELS[status]) return STATUS_LABELS[status];
+  if (status >= 500) return 'サーバーの問題';
+  if (status >= 400) return 'ページの問題';
+  if (status >= 300) return 'リダイレクト';
+  return 'エラー';
+}
+
+function showStatusTile(card, status, kind) {
+  const fallback = card.querySelector('.thumb-fallback');
+  if (!fallback) return;
+
+  card.classList.add('is-status');
+  card.classList.add(status >= 500 || status === 0 ? 'status-server' : 'status-client');
+
+  fallback.textContent = '';
+  fallback.style.removeProperty('--fb-a');
+  fallback.style.removeProperty('--fb-b');
+
+  const code = document.createElement('span');
+  code.className = 'status-code';
+  code.textContent = status === 0 ? '×' : String(status);
+
+  const label = document.createElement('span');
+  label.className = 'status-label';
+  label.textContent = statusLabel(status, kind);
+
+  fallback.appendChild(code);
+  fallback.appendChild(label);
+}
+
 /** 撮影待ちのカードを URL から引けるようにしておく。 */
 const cardsAwaitingShot = new Map();
 
@@ -177,6 +228,13 @@ async function hydrateCard(card) {
 
   if (data && data.image) {
     showImage(card, data.image);
+    return;
+  }
+
+  // 2xx で返らなかったページは、撮影しても意味が無い。番号を出して終わる。
+  if (data && typeof data.httpStatus === 'number') {
+    showStatusTile(card, data.httpStatus, data.netKind);
+    layoutCard(card);
     return;
   }
 

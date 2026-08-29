@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "follient",
-  "version": "8.0.0",
+  "version": "9.0.0",
   "description": "ブックマークをPinterest風のタイルで表示する新しいタブ。",
   "browser_specific_settings": {
     "gecko": {
@@ -25,6 +25,7 @@
   },
   "background": {
     "scripts": [
+      "src/defaults.js",
       "src/capture.js",
       "src/background.js"
     ]
@@ -32,5 +33,9 @@
   "icons": {
     "48": "src/icons/icon-48.png",
     "96": "src/icons/icon-96.png"
+  },
+  "options_ui": {
+    "page": "src/options.html",
+    "open_in_tab": false
   }
 }

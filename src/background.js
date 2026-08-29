@@ -18,6 +18,17 @@
   /** URL -> Promise。同一 URL の多重取得を防ぐ。 */
   const inFlight = new Map();
 
+  /** 設定。設定画面での変更をその場で拾う。 */
+  let settings = Object.assign({}, FOLLIENT_DEFAULTS);
+  follientLoadSettings().then((loaded) => {
+    settings = loaded;
+  });
+  browser.storage.onChanged.addListener((changes, area) => {
+    if (area === 'local' && changes.settings) {
+      settings = Object.assign({}, FOLLIENT_DEFAULTS, changes.settings.newValue || {});
+    }
+  });
+
   /** 同時接続数を絞るための簡易セマフォ。 */
   let running = 0;
   const waiting = [];
@@ -261,26 +272,28 @@
     // OGP を第一に、無ければ順に代わりを探す。撮影はここで見つからなかった
     // ときの最後の手段なので、ここで拾えるほど安全で安上がりになる。
     let source = 'og';
-    let rawImage = metaContent(doc, [
-      'meta[property="og:image:secure_url"]',
-      'meta[property="og:image"]',
-      'meta[name="og:image"]',
-      'meta[name="twitter:image"]',
-      'meta[name="twitter:image:src"]',
-    ]);
+    let rawImage = settings.sourceOg
+      ? metaContent(doc, [
+          'meta[property="og:image:secure_url"]',
+          'meta[property="og:image"]',
+          'meta[name="og:image"]',
+          'meta[name="twitter:image"]',
+          'meta[name="twitter:image:src"]',
+        ])
+      : null;
 
-    if (!rawImage) {
+    if (!rawImage && settings.sourceImageSrc) {
       const link = doc.querySelector('link[rel="image_src"][href]');
       if (link) {
         rawImage = link.getAttribute('href');
         source = 'image_src';
       }
     }
-    if (!rawImage) {
+    if (!rawImage && settings.sourceJsonLd) {
       rawImage = imageFromJsonLd(doc);
       if (rawImage) source = 'json-ld';
     }
-    if (!rawImage) {
+    if (!rawImage && settings.sourceBodyImg) {
       rawImage = imageFromBody(doc);
       if (rawImage) source = 'img';
     }
@@ -314,7 +327,13 @@
         signal: controller.signal,
         headers: { Accept: accept },
       });
-      if (!response.ok) throw new Error('HTTP ' + response.status);
+      if (!response.ok) {
+        // 2xx でないことは、それ自体がカードに出す価値のある情報。
+        // 呼び出し側で見分けられるよう、番号を持たせて投げる。
+        const failure = new Error('HTTP ' + response.status);
+        failure.httpStatus = response.status;
+        throw failure;
+      }
 
       const contentType = response.headers.get('content-type') || '';
       if (contentType && typePattern && !typePattern.test(contentType)) {
@@ -340,6 +359,8 @@
 
     // ページ自体に画像が無くても、フィードなら持っていることが多い。
     // 撮影に回すより、こちらのほうが安全で速い。
+    if (!settings.sourceFeed) return meta;
+
     const feedUrl = findFeedUrl(doc, page.finalUrl);
     if (!feedUrl) return meta;
 
@@ -382,7 +403,24 @@
       } catch (e) {
         // 失敗も短期キャッシュしたいところだが、一時的なオフライン等もあるので
         // エラーは返すだけにして、ニュータブ側でフォールバック表示させる。
-        return { title: null, image: null, description: null, siteName: null, error: String(e) };
+        const result = {
+          title: null,
+          image: null,
+          description: null,
+          siteName: null,
+          error: String(e),
+        };
+        if (typeof e.httpStatus === 'number') {
+          result.httpStatus = e.httpStatus;
+        } else if (e && e.name === 'AbortError') {
+          result.httpStatus = 0;
+          result.netKind = 'timeout';
+        } else if (e instanceof TypeError) {
+          // 名前が引けない、接続できない等
+          result.httpStatus = 0;
+          result.netKind = 'network';
+        }
+        return result;
       } finally {
         release();
         inFlight.delete(url);
