@@ -10,7 +10,25 @@
    名前の衝突で他のスクリプトが丸ごと死ぬのを防ぐため閉じ込める。 */
 (() => {
   const CACHE_PREFIX = 'og:';
-  const CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7日
+
+  /**
+   * 取り出し方の版。取得元を増やしたり読み込み上限を変えたりしたら上げる。
+   *
+   * これが無いと、改善しても古い結果を見続けてしまう。実際 512KB 上限だった
+   * 頃に「画像なし」と判定された YouTube が、上限を 2MB にした後も 7 日間
+   * 頭文字タイルのままだった。版が違うキャッシュは捨てて取り直す。
+   */
+  const EXTRACT_VERSION = 2;
+
+  /** 画像が取れた結果の寿命。 */
+  const CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+  /**
+   * 画像が取れなかった結果の寿命。短くしておく。
+   * こちらは「今の実装では見つけられなかった」という記録でしかなく、
+   * 実装が良くなれば結果が変わりうるため。
+   */
+  const CACHE_TTL_EMPTY_MS = 24 * 60 * 60 * 1000;
   const FETCH_TIMEOUT_MS = 8000;
   /**
    * 1 ページから読む上限。
@@ -69,14 +87,17 @@
     const stored = await browser.storage.local.get(key);
     const entry = stored[key];
     if (!entry) return null;
-    if (Date.now() - entry.at > CACHE_TTL_MS) return null;
+    // 取り出し方が変わっていたら、古い判断は当てにならない
+    if (entry.v !== EXTRACT_VERSION) return null;
+    const ttl = entry.data && entry.data.image ? CACHE_TTL_MS : CACHE_TTL_EMPTY_MS;
+    if (Date.now() - entry.at > ttl) return null;
     return entry.data;
   }
 
   async function writeCache(url, data) {
     try {
       await browser.storage.local.set({
-        [CACHE_PREFIX + url]: { at: Date.now(), data },
+        [CACHE_PREFIX + url]: { at: Date.now(), v: EXTRACT_VERSION, data },
       });
     } catch (e) {
       // 容量超過などは致命的ではないので握りつぶす
