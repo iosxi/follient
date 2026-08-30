@@ -296,6 +296,16 @@ async function hydrateCard(card, force) {
   setThumbState(card, 'is-nothumb', 'サムネイルなし');
 }
 
+/**
+ * 候補を一巡して全部だめだったあと、間を空けてやり直す回数と、その基準時間。
+ *
+ * rawkuma.net の画像は Cloudflare のエッジにある間だけ 200 で返り、
+ * エッジから落ちるとオリジンに無いので 404 になる。実測で 8 本中 2 本しか
+ * 通らなかった。1 回の失敗で諦めると、生きている絵を捨ててしまう。
+ */
+const IMAGE_RETRY_ROUNDS = 2;
+const IMAGE_RETRY_BASE_MS = 1200;
+
 /** 読めた URL を背景に教える。次からはそれが先頭になる。 */
 function reportWorkingImage(pageUrl, imageUrl) {
   browser.runtime
@@ -309,19 +319,34 @@ function reportWorkingImage(pageUrl, imageUrl) {
  * 取り出せたことと、実際に読めることは別。rawkuma.net は JSON-LD が 404 の
  * ファイルを指していて、本文の img には生きた画像があるのに諦めていた。
  * 最初の 1 件で決め打たず、全部だめだったときに初めて「サムネイルなし」にする。
+ *
+ * 一巡して全部だめでも、そこでは諦めない。相手が同じ URL に 404 を返したり
+ * 返さなかったりすることがあるため (DEVELOPMENT.md「同じ URL が 404 に
+ * なったりならなかったりする」)。間を空けて数回やり直す。
  */
 function showImage(card, sources) {
   const list = (Array.isArray(sources) ? sources : [sources]).filter(Boolean);
   const img = card.querySelector('.thumb-img');
   const thumb = card.querySelector('.thumb');
   let index = 0;
+  let round = 0;
 
   const attempt = () => {
     if (index >= list.length) {
-      // 場所は分かったのに、どれも読めなかった (消えている、外部には
-      // 配信しない等)。黙って代替面へ戻すと伝わらないので明示する。
-      img.removeAttribute('src');
-      setThumbState(card, 'is-nothumb', 'サムネイルなし');
+      if (round >= IMAGE_RETRY_ROUNDS) {
+        // 場所は分かったのに、どれも読めなかった (消えている、外部には
+        // 配信しない等)。黙って代替面へ戻すと伝わらないので明示する。
+        img.removeAttribute('src');
+        setThumbState(card, 'is-nothumb', 'サムネイルなし');
+        return;
+      }
+      round += 1;
+      index = 0;
+      // 何百枚もが同時に叩き直さないよう、待ち時間をばらす
+      const wait = IMAGE_RETRY_BASE_MS * round * (1 + Math.random());
+      setTimeout(() => {
+        if (card.isConnected) attempt();
+      }, wait);
       return;
     }
 
@@ -352,6 +377,7 @@ function showImage(card, sources) {
       attempt();
     };
 
+    if (img.getAttribute('src') === src) img.removeAttribute('src');
     img.src = src;
   };
 
