@@ -24,22 +24,24 @@
     <div class="card-menu" id="card-menu" role="menu" hidden></div>
 
     <template id="card-template">
+      <!-- カードのリンクは中身を包まず、上に重ねる。包んでしまうと
+           チャプターのリンクが <a> の入れ子になり成り立たないため。 -->
       <div class="card">
-        <a class="card-link" href="#">
-          <div class="thumb">
-            <div class="thumb-fallback"></div>
-            <div class="order-badge"></div>
-            <img class="thumb-img" alt="" decoding="async" />
-            <div class="thumb-state" hidden>
-              <span class="state-icon" aria-hidden="true"></span>
-              <span class="state-label"></span>
-            </div>
+        <div class="thumb">
+          <div class="thumb-fallback"></div>
+          <div class="order-badge"></div>
+          <img class="thumb-img" alt="" decoding="async" />
+          <div class="thumb-state" hidden>
+            <span class="state-icon" aria-hidden="true"></span>
+            <span class="state-label"></span>
           </div>
-          <div class="meta">
-            <div class="title"></div>
-            <div class="host"></div>
-          </div>
-        </a>
+        </div>
+        <div class="meta">
+          <div class="title"></div>
+          <div class="chapters"></div>
+          <div class="host"></div>
+        </div>
+        <a class="card-link" href="#"><span class="link-label"></span></a>
         <button
           class="menu-button"
           type="button"

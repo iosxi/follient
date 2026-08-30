@@ -287,8 +287,13 @@ async function hydrateCard(card, force) {
   // 既定のまま (= URL そのもの等) の場合だけ OG タイトルで補う。
   if (data && data.title && card.dataset.useOgTitle === 'true') {
     card.querySelector('.title').textContent = data.title;
+    card.querySelector('.link-label').textContent = data.title;
     card.title = data.title + '\n' + url;
   }
+
+  // 設定で切ったら、その場で消えてほしい。キャッシュに残っている話数を
+  // 出さないよう、ここでも見る。
+  renderChapters(card, settings.showChapters ? data && data.chapters : null);
 
   // 相手がはっきり 4xx / 5xx を返したときだけ、手元の絵より状態を優先する。
   // 消えたブックマークだと分かるほうが、昔の絵が出続けるより役に立つため。
@@ -353,6 +358,29 @@ function retryWaitMs(round) {
 function retryRounds() {
   const value = parseInt(settings.retryMax, 10);
   return Number.isFinite(value) && value >= 0 ? value : FOLLIENT_DEFAULTS.retryMax;
+}
+
+/**
+ * 話数を並べる (rawkuma 専用)。
+ *
+ * どこまで読んだかは、本物の <a> を置いて CSS の :visited に任せる。
+ * 訪問済みかどうかは JavaScript から読めない (履歴詐取の対策で塞がれて
+ * いる) ので、follient 自身は既読の数も日付も知らない。色が変わるのを
+ * 利用者が見るだけ、というのがこの仕組みの限界。
+ */
+function renderChapters(card, chapters) {
+  const box = card.querySelector('.chapters');
+  if (!box) return;
+  box.textContent = '';
+  if (!Array.isArray(chapters) || chapters.length === 0) return;
+
+  for (const chapter of chapters) {
+    const link = document.createElement('a');
+    link.href = chapter.url;
+    link.textContent = chapter.label;
+    link.title = chapter.url;
+    box.appendChild(link);
+  }
 }
 
 /** 手元に持っているサムネイルを聞く。あれば網に出ずに済む。 */
@@ -575,11 +603,13 @@ function createFolderCard(node, childCount) {
   card.querySelector('.thumb-img').remove();
   card.querySelector('.thumb-state').remove();
   card.querySelector('.order-badge').remove();
+  card.querySelector('.chapters').remove();
   // 出せる操作が無いので、ボタン自体を置かない
   card.querySelector('.menu-button').remove();
 
   const title = node.title || '(名称未設定のフォルダ)';
   card.querySelector('.title').textContent = title;
+  card.querySelector('.link-label').textContent = title;
   card.querySelector('.host').textContent =
     childCount === 0 ? '空のフォルダ' : childCount + ' 件';
   card.title = title;
@@ -611,6 +641,7 @@ function createBookmarkCard(node, order) {
 
   const label = hasOwnTitle ? node.title : host || node.url;
   card.querySelector('.title').textContent = label;
+  card.querySelector('.link-label').textContent = label;
   card.querySelector('.host').textContent = host;
   card.title = (node.title || node.url) + '\n' + node.url;
 

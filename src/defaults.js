@@ -13,6 +13,10 @@ var FOLLIENT_DEFAULTS = {
   sourceFeed: true, // 4. RSS / Atom
   sourceBodyImg: true, // 5. 本文中の大きな img
 
+  // rawkuma の作品ページに最新の話数を並べ、開いたことのある話を色で分ける。
+  // 専用の機能なので、要らない人は切れるようにしておく。
+  showChapters: true,
+
   // 画像が読めなかったときのやり直し。相手が短時間の要求を絞ることが
   // あるので、既定では待ち時間を倍々に伸ばす。
   retryMax: 6, // 一巡して全部だめだったあと、やり直す回数

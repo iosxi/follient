@@ -61,6 +61,12 @@
       title: 'RAWKUMA',
       children: [
         { title: 'RAWKUMA - latest', url: 'https://rawkuma.net/latest-update/?the_page=1' },
+        // 話数一覧の表示を見るためのもの。chapter-169 を先に開いておくと、
+        // その行だけ :visited で色が変わるはず。
+        {
+          title: 'Futari Solo Camp',
+          url: 'https://rawkuma.net/manga/futari-solo-camp/',
+        },
         { title: 'RAWKUMA - bouken', url: 'https://rawkuma.net/manga/bouken-shinai-watashi-no-isekai-manual/' },
         { title: 'RAWKUMA - isekai', url: 'https://rawkuma.net/manga/isekai-de-cheat-skill-wo-te-ni-shita-ore-wa-genjitsu-sekai-wo-mo-musou-suru-girls-side-kareinaru-otome-tachi-no-bouken-wa-sekai-wo-kaeta/' },
       ],

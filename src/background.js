@@ -18,7 +18,7 @@
    * 頃に「画像なし」と判定された YouTube が、上限を 2MB にした後も 7 日間
    * 頭文字タイルのままだった。版が違うキャッシュは捨てて取り直す。
    */
-  const EXTRACT_VERSION = 4;
+  const EXTRACT_VERSION = 6;
 
   /** 画像が取れた結果の寿命。 */
   const CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
@@ -29,6 +29,15 @@
    * 実装が良くなれば結果が変わりうるため。
    */
   const CACHE_TTL_EMPTY_MS = 24 * 60 * 60 * 1000;
+
+  /**
+   * 話数だけの寿命。
+   *
+   * 「最新が何話か」は毎日変わりうるので、絵とは別の時計で見る。絵は
+   * img: に持っていて取り直さないため、ここで期限が切れてもページの HTML を
+   * もう一度読むだけで済み、画像の再取得は起きない。
+   */
+  const CHAPTER_TTL_MS = 24 * 60 * 60 * 1000;
   const FETCH_TIMEOUT_MS = 8000;
   /**
    * 1 ページから読む上限。
@@ -91,6 +100,13 @@
     if (entry.v !== EXTRACT_VERSION) return null;
     const ttl = entry.data && entry.data.image ? CACHE_TTL_MS : CACHE_TTL_EMPTY_MS;
     if (Date.now() - entry.at > ttl) return null;
+
+    // 絵はまだ使えるが話数が古い、という場合は取り直す。話数を出さない
+    // ページ (chapters が null) はここに掛からないので、巻き添えにならない。
+    if (settings.showChapters && entry.data && entry.data.chapters) {
+      const at = entry.data.chaptersAt || entry.at;
+      if (Date.now() - at > CHAPTER_TTL_MS) return null;
+    }
     return entry.data;
   }
 
@@ -573,6 +589,72 @@
     }
   }
 
+  /* ------------------------------------------------------------------ *
+   * チャプター一覧 (rawkuma 専用)
+   *
+   * 汎用ではない。作品ページに並ぶ話数へのリンクを拾い、新しい順に返す。
+   * 「どこまで読んだか」はニュータブ側が CSS の :visited で出す。訪問済みか
+   * どうかは JavaScript から読めない (履歴詐取の対策で塞がれている) ので、
+   * ここでは URL を渡すところまでしかできない。
+   * ------------------------------------------------------------------ */
+
+  const CHAPTER_HOST_RE = /(^|\.)rawkuma\.net$/i;
+
+  /** カードに出す話数。多いと縦に伸びるので、新しいほうから数件だけ。 */
+  const CHAPTER_LIMIT = 3;
+
+  /**
+   * 末尾は chapter-<話数>.<記事ID>/ という形。話数には 169.5 のような
+   * 小数もある (実データで 6 件あった)。記事 ID は毎回ちがうので、
+   * 話数から URL を組み立てることはできない。必ずページから拾う。
+   */
+  const CHAPTER_PATH_RE = /\/chapter-(.+)\.(\d+)\/?$/i;
+
+  /**
+   * 話数を出すのは作品ページ (/manga/<作品>/) だけ。
+   *
+   * 一覧ページ (/latest-update/ など) にも話数へのリンクは並ぶが、それは
+   * 別々の作品の寄せ集めで、1 つの作品の続きではない。実際テストで
+   * 「RAWKUMA - latest」のカードに、無関係な作品の話数が 3 つ並んだ。
+   */
+  const MANGA_PATH_RE = /^\/manga\/[^/]+\/?$/i;
+
+  function chaptersFromDoc(doc, baseUrl) {
+    let here;
+    try {
+      here = new URL(baseUrl);
+    } catch (e) {
+      return null;
+    }
+    if (!CHAPTER_HOST_RE.test(here.hostname)) return null;
+    if (!MANGA_PATH_RE.test(here.pathname)) return null;
+
+    const byUrl = new Map();
+    const links = doc.querySelectorAll('a[href*="/chapter-"]');
+    for (const link of links) {
+      const url = absolutize(link.getAttribute('href'), baseUrl);
+      if (!url || byUrl.has(url)) continue;
+
+      let path;
+      try {
+        path = new URL(url).pathname;
+      } catch (e) {
+        continue;
+      }
+      const found = CHAPTER_PATH_RE.exec(path);
+      if (!found) continue;
+
+      const number = parseFloat(found[1]);
+      if (!Number.isFinite(number)) continue;
+      byUrl.set(url, { url, number, label: 'Chapter-' + found[1] });
+    }
+
+    if (byUrl.size === 0) return null;
+    return [...byUrl.values()]
+      .sort((a, b) => b.number - a.number)
+      .slice(0, CHAPTER_LIMIT);
+  }
+
   /** ページが名乗るフィードから画像を 1 枚拾う。無ければ null。 */
   async function feedImage(doc, baseUrl, reload) {
     const feedUrl = findFeedUrl(doc, baseUrl);
@@ -652,6 +734,8 @@
     meta.images = images;
     meta.image = images.length ? images[0].url : null;
     meta.imageSource = images.length ? images[0].source : null;
+    meta.chapters = settings.showChapters ? chaptersFromDoc(doc, page.finalUrl) : null;
+    meta.chaptersAt = meta.chapters ? Date.now() : 0;
     return meta;
   }
 
@@ -669,6 +753,7 @@
         title: null,
         images: [],
         image: null,
+        chapters: null,
         description: null,
         siteName: null,
         error: String(e),
@@ -701,6 +786,7 @@
         title: null,
         images: [],
         image: null,
+        chapters: null,
         description: null,
         siteName: null,
         skipped: true,
