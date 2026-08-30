@@ -516,6 +516,7 @@ function createFolderCard(node, childCount) {
 
   card.querySelector('.thumb-img').remove();
   card.querySelector('.thumb-state').remove();
+  card.querySelector('.order-badge').remove();
 
   const title = node.title || '(名称未設定のフォルダ)';
   card.dataset.name = title;
@@ -527,11 +528,17 @@ function createFolderCard(node, childCount) {
   return card;
 }
 
-function createBookmarkCard(node) {
+/**
+ * @param {number} order このフォルダで何番目のブックマークか (1 始まり)。
+ *   フォルダは数に入れない。並べ替えたときに追える番号が欲しいだけなので、
+ *   ブックマークだけを通しで数える。
+ */
+function createBookmarkCard(node, order) {
   const card = createCardShell(node);
   card.dataset.kind = 'bookmark';
   card.dataset.url = node.url;
   card.querySelector('.card-link').href = node.url;
+  card.querySelector('.order-badge').textContent = String(order);
 
   const host = hostOf(node.url);
   card.dataset.host = host;
@@ -683,9 +690,13 @@ async function render() {
 
   const fragment = document.createDocumentFragment();
   const cards = [];
+  let order = 0;
 
   visibleNodes.forEach((node, index) => {
-    const card = node.url ? createBookmarkCard(node) : createFolderCard(node, counts[index]);
+    if (node.url) order += 1;
+    const card = node.url
+      ? createBookmarkCard(node, order)
+      : createFolderCard(node, counts[index]);
     card.style.animationDelay = Math.min(index, 24) * 18 + 'ms';
     fragment.appendChild(card);
     cards.push(card);

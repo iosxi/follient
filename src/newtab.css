@@ -460,6 +460,33 @@ main {
   box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
 }
 
+/* フォルダ内で何番目のブックマークかを、サムネイルの左上に貼る */
+.order-badge {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* 1 桁なら丸、桁が増えたら横に伸びる */
+  min-width: 22px;
+  height: 22px;
+  padding: 0 6px;
+  border: 1px solid rgba(0, 0, 0, 0.18);
+  border-radius: 999px;
+  /* ︙ と同じく、絵柄の上でも沈まないよう白地に黒で固定する */
+  background: #ffffff;
+  color: #111114;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.24);
+  font-size: 11.5px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  /* カード全体がリンクなので、札はクリックを受けない */
+  pointer-events: none;
+}
+
 /* ボタンと文字が重ならないよう、タイトルの右を空けておく */
 .title {
   padding-right: 26px;
