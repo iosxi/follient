@@ -170,8 +170,22 @@ Firefox の拡張機能ページでも `:visited` が効くことは確認済み
 `:visited` で変えられるのは色の類だけ (`color`、`background-color`、
 `border-*-color` など)。太字や印は付けられないので、そのぶん色は思い切って
 変える。文字色だけの違いでは並んだ話数から読んだものを見分けられなかった。
-**未訪問の側で `background-color: transparent` を宣言しておくこと。**
-宣言が無いと `:visited` 側で差し替えられない。
+
+**未訪問側の背景に `transparent` を置いてはいけない。** `transparent` を
+基底にすると `:visited` 側の `background-color` が黙って無視される。
+`color` だけが変わるので、暗い配色では黒い字が面に沈んで読めなくなった
+(v20 で実際にそうなった)。カードの面と同じ不透明な色 (`var(--surface)`)
+を敷いておけば、未訪問は塗っていないように見えて、訪問済みだけ色が乗る。
+
+拡張機能ページに変種を並べて実測した結果:
+
+| 基底の `background-color` | `:visited` の指定 | 結果 |
+| --- | --- | --- |
+| `transparent` | `background-color` | 効かない |
+| `transparent` | `background-color` + `color` | 文字だけ変わり消える |
+| 不透明な色 | `background-color` | **効く** |
+
+`color` と `border-*-color` は基底が何であれ効く。
 
 一覧ページ (`/latest-update/` など) にも話数リンクは並ぶが、別々の作品の
 寄せ集めで続きではない。`MANGA_PATH_RE` で作品ページに限る。テストで

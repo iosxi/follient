@@ -457,14 +457,17 @@ main {
  * そのぶん色は思い切って変える。文字色だけの違いでは、並んだ話数の中から
  * 読んだものを見分けられない。面ごと塗って、遠目にも分かるようにする。
  *
- * 背景は未訪問の側で transparent を宣言しておくこと。宣言が無いと
- * :visited 側で色を差し替えられない。
+ * 未訪問側の背景は **transparent ではなく不透明な色** を置くこと。
+ * transparent を基底にすると :visited 側の background-color が黙って
+ * 無視される (実機で確認)。文字色だけが変わるので、暗い配色では黒い字が
+ * 面に沈んで読めなくなった。カードの面と同じ色を敷いておけば、未訪問は
+ * 塗っていないように見えて、訪問済みだけ色が乗る。
  */
 .chapters a {
   display: block;
   padding: 1px 8px;
   border-radius: 5px;
-  background-color: transparent;
+  background-color: var(--surface);
   color: var(--text-dim);
   font-size: 11.5px;
   font-weight: 600;
