@@ -251,6 +251,15 @@ const viewportObserver = new IntersectionObserver(
   { rootMargin: '200px 0px' }
 );
 
+/** 背景から返った結果を、試す順に並んだ URL の配列にする。 */
+function imageListOf(data) {
+  if (!data) return [];
+  if (Array.isArray(data.images) && data.images.length) {
+    return data.images.map((candidate) => candidate.url);
+  }
+  return data.image ? [data.image] : [];
+}
+
 /**
  * @param {boolean} [force] キャッシュの有効期間を無視して取り直す。
  */
@@ -270,8 +279,9 @@ async function hydrateCard(card, force) {
     card.title = data.title + '\n' + url;
   }
 
-  if (data && data.image) {
-    showImage(card, data.image);
+  const candidates = imageListOf(data);
+  if (candidates.length) {
+    showImage(card, candidates);
     return;
   }
 
@@ -286,13 +296,43 @@ async function hydrateCard(card, force) {
   setThumbState(card, 'is-nothumb', 'サムネイルなし');
 }
 
-function showImage(card, src) {
+/** 読めた URL を背景に教える。次からはそれが先頭になる。 */
+function reportWorkingImage(pageUrl, imageUrl) {
+  browser.runtime
+    .sendMessage({ type: 'follient:image-ok', url: pageUrl, image: imageUrl })
+    .catch(() => {});
+}
+
+/**
+ * 候補を順に試す。
+ *
+ * 取り出せたことと、実際に読めることは別。rawkuma.net は JSON-LD が 404 の
+ * ファイルを指していて、本文の img には生きた画像があるのに諦めていた。
+ * 最初の 1 件で決め打たず、全部だめだったときに初めて「サムネイルなし」にする。
+ */
+function showImage(card, sources) {
+  const list = (Array.isArray(sources) ? sources : [sources]).filter(Boolean);
   const img = card.querySelector('.thumb-img');
   const thumb = card.querySelector('.thumb');
+  let index = 0;
 
-  img.addEventListener(
-    'load',
-    () => {
+  const attempt = () => {
+    if (index >= list.length) {
+      // 場所は分かったのに、どれも読めなかった (消えている、外部には
+      // 配信しない等)。黙って代替面へ戻すと伝わらないので明示する。
+      img.removeAttribute('src');
+      setThumbState(card, 'is-nothumb', 'サムネイルなし');
+      return;
+    }
+
+    const src = list[index];
+    index += 1;
+
+    // once の付いたリスナーは、発火しない限り残って積み上がる。
+    // 何度も試すのでプロパティに入れて、そのつど上書きする。
+    img.onload = () => {
+      img.onload = null;
+      img.onerror = null;
       if (!card.isConnected) return;
       const ratio = img.naturalWidth / img.naturalHeight;
       if (ratio > 0 && Number.isFinite(ratio)) {
@@ -301,22 +341,21 @@ function showImage(card, src) {
       }
       img.classList.add('loaded');
       setThumbState(card, null);
-    },
-    { once: true }
-  );
+      // 先頭が死んでいた。次に開くときは、これを先に試させる
+      if (index > 1) reportWorkingImage(card.dataset.url, src);
+    };
 
-  img.addEventListener(
-    'error',
-    () => {
-      // 場所は分かったのに読めない (消えている、外部には配信しない等)。
-      // 黙って代替面へ戻すと「取れなかった」ことが伝わらないので明示する。
-      img.removeAttribute('src');
-      setThumbState(card, 'is-nothumb', 'サムネイルなし');
-    },
-    { once: true }
-  );
+    img.onerror = () => {
+      img.onload = null;
+      img.onerror = null;
+      if (!card.isConnected) return;
+      attempt();
+    };
 
-  img.src = src;
+    img.src = src;
+  };
+
+  attempt();
 }
 
 /** 「サムネイル更新」から呼ぶ。いまの絵を捨てて、はじめから取り直す。 */

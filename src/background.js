@@ -18,7 +18,7 @@
    * 頃に「画像なし」と判定された YouTube が、上限を 2MB にした後も 7 日間
    * 頭文字タイルのままだった。版が違うキャッシュは捨てて取り直す。
    */
-  const EXTRACT_VERSION = 3;
+  const EXTRACT_VERSION = 4;
 
   /** 画像が取れた結果の寿命。 */
   const CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -264,10 +264,13 @@
    * そこで属性は「小さいと分かっているものを外す」ためだけに使い、
    * 無いことは外す理由にしない。代わりに名前で飾りを避け、前のほうに
    * 出てくるものを選ぶ。見出し画像はたいてい本文の先頭側にある。
+   *
+   * 1 枚に絞らず候補として複数返す。先頭が読めなかったときに次を試せる。
    */
-  function imageFromBody(doc) {
+  function imagesFromBody(doc, limit) {
     const images = doc.querySelectorAll('img');
-    let fallback = null;
+    const sized = []; // 寸法属性で十分大きいと分かっているもの
+    const unsized = []; // 寸法が分からないもの
     let seen = 0;
 
     for (const img of images) {
@@ -288,11 +291,10 @@
         src + ' ' + (img.getAttribute('class') || '') + ' ' + (img.getAttribute('alt') || '');
       if (DECORATION_RE.test(hint)) continue;
 
-      // 属性で十分大きいと分かっているものが最優先
-      if (width >= 200 && height >= 120) return src;
-      if (!fallback) fallback = src;
+      (width >= 200 && height >= 120 ? sized : unsized).push(src);
+      if (sized.length >= limit) break;
     }
-    return fallback;
+    return sized.concat(unsized).slice(0, limit);
   }
 
   /** ページが名乗っている RSS / Atom フィードの場所。 */
@@ -351,7 +353,8 @@
     return null;
   }
 
-  function parseMetadata(doc, finalUrl) {
+  /** 画像以外の、ページが名乗っている文字情報。 */
+  function parseMetadata(doc) {
     const title =
       metaContent(doc, [
         'meta[property="og:title"]',
@@ -359,36 +362,6 @@
         'meta[name="twitter:title"]',
       ]) ||
       (doc.querySelector('title') ? doc.querySelector('title').textContent.trim() : null);
-
-    // OGP を第一に、無ければ順に代わりを探す。撮影はここで見つからなかった
-    // ときの最後の手段なので、ここで拾えるほど安全で安上がりになる。
-    let source = 'og';
-    let rawImage = settings.sourceOg
-      ? metaContent(doc, [
-          'meta[property="og:image:secure_url"]',
-          'meta[property="og:image"]',
-          'meta[name="og:image"]',
-          'meta[name="twitter:image"]',
-          'meta[name="twitter:image:src"]',
-        ])
-      : null;
-
-    if (!rawImage && settings.sourceImageSrc) {
-      const link = doc.querySelector('link[rel="image_src"][href]');
-      if (link) {
-        rawImage = link.getAttribute('href');
-        source = 'image_src';
-      }
-    }
-    if (!rawImage && settings.sourceJsonLd) {
-      rawImage = imageFromJsonLd(doc);
-      if (rawImage) source = 'json-ld';
-    }
-    if (!rawImage && settings.sourceBodyImg) {
-      rawImage = imageFromBody(doc);
-      if (rawImage) source = 'img';
-    }
-    if (!rawImage) source = null;
 
     const description = metaContent(doc, [
       'meta[property="og:description"]',
@@ -399,8 +372,6 @@
 
     return {
       title: title || null,
-      image: absolutize(rawImage, finalUrl),
-      imageSource: source,
       description: description || null,
       siteName: siteName || null,
     };
@@ -444,24 +415,10 @@
     }
   }
 
-  async function fetchMetadata(url, reload) {
-    const page = await fetchText(
-      url,
-      'text/html,application/xhtml+xml',
-      /text\/html|application\/xhtml/i,
-      reload
-    );
-    const doc = new DOMParser().parseFromString(page.text, 'text/html');
-    const meta = parseMetadata(doc, page.finalUrl);
-    if (meta.image) return meta;
-
-    // ページ自体に画像が無くても、フィードなら持っていることが多い。
-    // 撮影に回すより、こちらのほうが安全で速い。
-    if (!settings.sourceFeed) return meta;
-
-    const feedUrl = findFeedUrl(doc, page.finalUrl);
-    if (!feedUrl) return meta;
-
+  /** ページが名乗るフィードから画像を 1 枚拾う。無ければ null。 */
+  async function feedImage(doc, baseUrl, reload) {
+    const feedUrl = findFeedUrl(doc, baseUrl);
+    if (!feedUrl) return null;
     try {
       const feed = await fetchText(
         feedUrl,
@@ -470,16 +427,73 @@
         reload
       );
       const feedDoc = new DOMParser().parseFromString(feed.text, 'application/xml');
-      if (!feedDoc.querySelector('parsererror')) {
-        const image = imageFromFeedDoc(feedDoc, feed.finalUrl);
-        if (image) {
-          meta.image = image;
-          meta.imageSource = 'feed';
-        }
-      }
+      if (feedDoc.querySelector('parsererror')) return null;
+      return imageFromFeedDoc(feedDoc, feed.finalUrl);
     } catch (e) {
-      // フィードが無い/壊れていても、ページ本体の情報は返す
+      return null; // フィードが無い/壊れていても、ページ本体の情報は返す
     }
+  }
+
+  /**
+   * 使えそうな画像を、良い順に「全部」集める。
+   *
+   * 1 枚見つけた時点で打ち切ってはいけない。取り出せたことと、その URL が
+   * 実際に読めることは別だからである。rawkuma.net は JSON-LD が 404 の
+   * ファイルを指していて、本文の img には生きた画像があるのに「サムネイル
+   * なし」になっていた。1 件しか返さないとカード側に次を試す道が無い。
+   * 読めるかどうかはニュータブ側の <img> が決めるので、候補は残しておく。
+   */
+  async function fetchMetadata(url, reload) {
+    const page = await fetchText(
+      url,
+      'text/html,application/xhtml+xml',
+      /text\/html|application\/xhtml/i,
+      reload
+    );
+    const doc = new DOMParser().parseFromString(page.text, 'text/html');
+    const meta = parseMetadata(doc);
+
+    const images = [];
+    const seen = new Set();
+    const add = (raw, source) => {
+      const abs = absolutize(raw, page.finalUrl);
+      if (!abs || seen.has(abs)) return;
+      seen.add(abs);
+      images.push({ url: abs, source });
+    };
+
+    // 1〜3: ページが自分で名乗っている見出し画像
+    if (settings.sourceOg) {
+      add(
+        metaContent(doc, [
+          'meta[property="og:image:secure_url"]',
+          'meta[property="og:image"]',
+          'meta[name="og:image"]',
+          'meta[name="twitter:image"]',
+          'meta[name="twitter:image:src"]',
+        ]),
+        'og'
+      );
+    }
+    if (settings.sourceImageSrc) {
+      const link = doc.querySelector('link[rel="image_src"][href]');
+      if (link) add(link.getAttribute('href'), 'image_src');
+    }
+    if (settings.sourceJsonLd) add(imageFromJsonLd(doc), 'json-ld');
+
+    // 4: フィード。取得が 1 回増えるので、ページが何も名乗っていないときだけ見る
+    if (settings.sourceFeed && images.length === 0) {
+      add(await feedImage(doc, page.finalUrl, reload), 'feed');
+    }
+
+    // 5: 本文の img
+    if (settings.sourceBodyImg) {
+      for (const raw of imagesFromBody(doc, 3)) add(raw, 'img');
+    }
+
+    meta.images = images;
+    meta.image = images.length ? images[0].url : null;
+    meta.imageSource = images.length ? images[0].source : null;
     return meta;
   }
 
@@ -495,6 +509,7 @@
       // エラーは返すだけにして、ニュータブ側でフォールバック表示させる。
       const result = {
         title: null,
+        images: [],
         image: null,
         description: null,
         siteName: null,
@@ -524,7 +539,14 @@
    */
   async function getMetadata(url, force) {
     if (!isFetchable(url)) {
-      return { title: null, image: null, description: null, siteName: null, skipped: true };
+      return {
+        title: null,
+        images: [],
+        image: null,
+        description: null,
+        siteName: null,
+        skipped: true,
+      };
     }
 
     if (force) return runFetch(url, true);
@@ -539,8 +561,37 @@
     return task;
   }
 
+  /**
+   * カードが実際に読めた URL を教えてもらい、次からはそれを先頭にする。
+   *
+   * 先頭の候補が死んでいると、開くたびにそこで 404 を踏んでから次へ移る。
+   * 一度分かったことは覚えておく。
+   */
+  async function promoteImage(pageUrl, imageUrl) {
+    const key = CACHE_PREFIX + pageUrl;
+    const stored = await browser.storage.local.get(key);
+    const entry = stored[key];
+    if (!entry || !entry.data || !Array.isArray(entry.data.images)) return;
+
+    const images = entry.data.images;
+    const at = images.findIndex((c) => c.url === imageUrl);
+    if (at <= 0) return; // 知らない URL か、すでに先頭
+
+    const promoted = [images[at]].concat(images.filter((_, i) => i !== at));
+    entry.data.images = promoted;
+    entry.data.image = promoted[0].url;
+    entry.data.imageSource = promoted[0].source;
+    await browser.storage.local.set({ [key]: entry });
+  }
+
   browser.runtime.onMessage.addListener((message) => {
-    if (!message || message.type !== 'follient:metadata') return undefined;
-    return getMetadata(message.url, message.force);
+    if (!message) return undefined;
+    if (message.type === 'follient:metadata') {
+      return getMetadata(message.url, message.force);
+    }
+    if (message.type === 'follient:image-ok') {
+      return promoteImage(message.url, message.image).catch(() => {});
+    }
+    return undefined;
   });
 })();
