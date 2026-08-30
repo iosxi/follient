@@ -44,6 +44,28 @@
    */
   const clearButton = document.getElementById('clear');
   const clearResult = document.getElementById('clear-result');
+  const usageNote = document.getElementById('usage');
+
+  /**
+   * 何をどれだけ抱えているかを出す。
+   * サムネイルには期限が無く、消すのは利用者の操作だけなので、
+   * どれだけ溜まっているかが見えないと管理のしようがない。
+   */
+  async function showUsage() {
+    try {
+      const all = await browser.storage.local.get(null);
+      let thumbs = 0;
+      let bytes = 0;
+      for (const key of Object.keys(all)) {
+        if (key.indexOf('img:') === 0 && key !== 'img:index') thumbs += 1;
+        bytes += key.length + JSON.stringify(all[key] || null).length;
+      }
+      const mb = (bytes / (1024 * 1024)).toFixed(1);
+      usageNote.textContent = 'サムネイル ' + thumbs + ' 件を保存中 (全体で約 ' + mb + ' MB)';
+    } catch (e) {
+      usageNote.textContent = '';
+    }
+  }
 
   clearButton.addEventListener('click', async () => {
     clearButton.disabled = true;
@@ -58,12 +80,15 @@
       );
       if (keys.length > 0) await browser.storage.local.remove(keys);
       clearResult.textContent = keys.length + ' 件を消しました';
+      showUsage();
     } catch (e) {
       clearResult.textContent = '消せませんでした: ' + (e && e.message ? e.message : e);
     } finally {
       clearButton.disabled = false;
     }
   });
+
+  showUsage();
 
   (async () => {
     const settings = await follientLoadSettings();

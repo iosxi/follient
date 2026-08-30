@@ -290,22 +290,26 @@ async function hydrateCard(card, force) {
     card.title = data.title + '\n' + url;
   }
 
-  // 2xx で返らなかったページは、番号と意味を出して終わる。
-  // 保存してある絵より先に見る。消えたブックマークだと分かるほうが、
-  // 昔の絵が出続けるより役に立つ。
-  if (data && typeof data.httpStatus === 'number') {
-    showStatusTile(card, data.httpStatus, data.netKind);
-    return;
-  }
+  // 相手がはっきり 4xx / 5xx を返したときだけ、手元の絵より状態を優先する。
+  // 消えたブックマークだと分かるほうが、昔の絵が出続けるより役に立つため。
+  // 逆に httpStatus 0 (応答なし・接続不可) では優先しない。回線が一瞬
+  // 途切れただけで、苦労して取れた絵が隠れてしまうから。
+  const refused = data && typeof data.httpStatus === 'number' && data.httpStatus >= 400;
 
   // 一度読めた絵は手元にある。相手の機嫌に左右されず、網にも出ない。
-  if (!force) {
+  if (!force && !refused) {
     const stored = await requestStoredThumb(url);
     if (myGeneration !== generation || !card.isConnected) return;
     if (stored && stored.image) {
       showImage(card, [stored.image]);
       return;
     }
+  }
+
+  // 2xx で返らなかったページは、番号と意味を出して終わる。
+  if (data && typeof data.httpStatus === 'number') {
+    showStatusTile(card, data.httpStatus, data.netKind);
+    return;
   }
 
   const candidates = imageListOf(data);

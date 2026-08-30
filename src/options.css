@@ -154,6 +154,13 @@ h1 {
   font-size: 12px;
 }
 
+.usage {
+  margin: 12px 0 8px;
+  color: var(--text-dim);
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+}
+
 .saved {
   margin: 14px 0 0;
   color: var(--accent);

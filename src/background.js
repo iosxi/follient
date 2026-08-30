@@ -21,7 +21,7 @@
   const EXTRACT_VERSION = 4;
 
   /** 画像が取れた結果の寿命。 */
-  const CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+  const CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
   /**
    * 画像が取れなかった結果の寿命。短くしておく。
@@ -120,17 +120,21 @@
   const THUMB_PREFIX = 'img:';
   const THUMB_INDEX_KEY = 'img:index';
 
-  /** 保存しておく枚数の上限。超えたら古いものから捨てる。 */
-  const THUMB_MAX = 800;
+  /**
+   * 保存しておく枚数の上限。超えたら古いものから捨てる。
+   *
+   * 相手が渋いサイトでは 1 枚取るのに何十秒もかかる。せっかく取れたものを
+   * 勝手に捨てないよう、実際の蔵書よりずっと大きくしてある。1 枚あたり
+   * 30〜60KB 程度なので、埋まっても 100MB 前後。
+   */
+  const THUMB_MAX = 2000;
 
   /** 保存する画像の最大幅と質。カード幅の 2 倍あれば足りる。 */
-  const THUMB_MAX_WIDTH = 480;
-  const THUMB_QUALITY = 0.7;
+  const THUMB_MAX_WIDTH = 400;
+  const THUMB_QUALITY = 0.68;
 
   /** 元画像の読み込み上限。これより大きいものは縮小せず諦める。 */
   const THUMB_SOURCE_MAX_BYTES = 8 * 1024 * 1024;
-
-  const THUMB_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
   /** 同じページの保存が二重に走らないようにする。 */
   const savingThumb = new Set();
@@ -145,7 +149,10 @@
       const stored = await browser.storage.local.get(key);
       const entry = stored[key];
       if (!entry || !entry.image) return null;
-      if (Date.now() - entry.at > THUMB_TTL_MS) return null;
+      // 期限は設けない。一度取れた絵は、消せと言われるまで持ち続ける。
+      // 渋い相手から 1 枚取るのに何十秒もかかることがあり、黙って捨てると
+      // その苦労をやり直させることになる。取り直しは ︙ の「サムネイル更新」
+      // か、設定画面の一括消去で、利用者が選んだときだけ行う。
       return entry.image;
     } catch (e) {
       return null;
