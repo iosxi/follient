@@ -9,8 +9,8 @@
     <h1>サムネイルの取得方法</h1>
     <p class="lead">
       カードの画像は、上から順に試して最初に見つかったものを使います。
-      不要な方法は外せます。下にあるものほど時間がかかり、
-      いちばん下の「撮影」だけはページを実際に開きます。
+      不要な方法は外せます。どれでも見つからなかったページは
+      「サムネイルなし」と表示されます。
     </p>
 
     <ul class="sources" id="sources">
@@ -49,17 +49,6 @@
           <span class="note">大きさが分かる画像のうち、十分大きいものを選ぶ</span>
         </label>
       </li>
-      <li class="capture">
-        <label>
-          <input type="checkbox" data-key="sourceCapture" />
-          <span class="name">6. ページを開いて撮影</span>
-          <span class="note">
-            隠しタブでページを読み込み、見た目を撮ります。ここまでで何も
-            見つからなかったときだけ行います。タブを操作する他の拡張機能と
-            相性が悪いことがあり、その場合 follient は自動で撮影をやめます。
-          </span>
-        </label>
-      </li>
     </ul>
 
     <p class="saved" id="saved" hidden>保存しました</p>
@@ -68,6 +57,7 @@
     <p class="lead">
       一度取れた画像は保存され、しばらく取り直しません。取得方法を変えた直後など、
       すぐに反映したいときは消してください。次にカードが表示されたときに取り直します。
+      1 件だけなら、カードの ︙ から「サムネイル更新」でも取り直せます。
     </p>
     <p class="actions">
       <button type="button" id="clear">取得済みの画像を消す</button>

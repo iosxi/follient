@@ -1,7 +1,7 @@
 /**
  * 設定の既定値と読み出し。
  *
- * 背景ページ (background.js / capture.js) と設定画面の両方から読むため、
+ * 背景ページ (background.js) と設定画面の両方から読むため、
  * IIFE で包まずにグローバルへ置いている。名前は follient 用に区別できる
  * ものにしてあるので、他のスクリプトと衝突しない。
  */
@@ -12,7 +12,6 @@ var FOLLIENT_DEFAULTS = {
   sourceJsonLd: true, // 3. JSON-LD
   sourceFeed: true, // 4. RSS / Atom
   sourceBodyImg: true, // 5. 本文中の大きな img
-  sourceCapture: true, // 6. ページを開いて撮影
 };
 
 /** 保存されている設定を既定値で埋めて返す。 */

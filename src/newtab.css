@@ -144,6 +144,8 @@ main {
 }
 
 .card {
+  /* ︙ ボタンを重ねるための基準 */
+  position: relative;
   /* 高さは JS が grid-row: span N で決めるため、自身は内容なりに伸びる */
   display: flex;
   flex-direction: column;
@@ -179,7 +181,7 @@ main {
   box-shadow: var(--shadow-hover);
 }
 
-.card:focus-visible {
+.card:has(:focus-visible) {
   outline: 2px solid var(--accent);
   outline-offset: 3px;
 }
@@ -270,24 +272,85 @@ main {
   font-variant-numeric: tabular-nums;
 }
 
-/* メタデータ取得中のスケルトン */
-.card.is-pending .title::after {
-  content: "";
-  display: block;
+/* ---------- サムネイルの途中経過 ---------- */
+
+/*
+ * 「取得中」と「取れなかった」の顔を分ける。
+ * どちらも頭文字だけのタイルに見えていると、待てば出るのか待っても
+ * 出ないのかを利用者が判断できない。
+ */
+.thumb-state {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  color: #fff;
+  pointer-events: none;
 }
 
+.thumb-state[hidden] {
+  display: none;
+}
+
+/* 取得中: 面を覆い、回るしるしと文字を中央に置く */
+.card.is-pending .thumb-state {
+  inset: 0;
+  flex-direction: column;
+  justify-content: center;
+  gap: 9px;
+  background: rgba(0, 0, 0, 0.34);
+}
+
+/* 取りにいっている間は頭文字を引っ込め、しるしだけを見せる */
 .card.is-pending .thumb-fallback {
-  animation: pulse 1.4s ease-in-out infinite;
+  font-size: 0;
 }
 
-@keyframes pulse {
-  0%,
-  100% {
-    opacity: 1;
+.card.is-pending .state-icon {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: 2.5px solid rgba(255, 255, 255, 0.34);
+  border-top-color: #fff;
+  animation: spin 0.9s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
   }
-  50% {
-    opacity: 0.62;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .card.is-pending .state-icon {
+    animation-duration: 2.6s;
   }
+}
+
+/* 取れなかった: 色の付いたタイルは残し、下辺に理由を貼る */
+.card.is-nothumb .thumb-state {
+  inset: auto 0 0 0;
+  gap: 6px;
+  padding: 6px 10px;
+  background: rgba(0, 0, 0, 0.52);
+}
+
+.card.is-nothumb .state-icon {
+  flex: none;
+  width: 15px;
+  height: 15px;
+}
+
+.card.is-nothumb .state-icon svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.state-label {
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
 }
 
 .empty {
@@ -345,4 +408,112 @@ main {
   font-size: 11.5px;
   font-weight: 600;
   opacity: 0.92;
+}
+
+/* ---------- カードのメニュー ---------- */
+
+/*
+ * カードは <a> のままにできない。︙ ボタンをリンクの中に置くと、押した
+ * ときにブックマークへ移動してしまうため。カードを入れ物の div にして、
+ * リンクとボタンを兄弟として並べている。
+ */
+.card-link {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  color: inherit;
+  text-decoration: none;
+}
+
+.menu-button {
+  position: absolute;
+  /* .meta の上余白は 12px。タイトルの 1 行目と肩を並べる高さに置く */
+  top: 9px;
+  right: 8px;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid rgba(0, 0, 0, 0.18);
+  border-radius: 50%;
+  /*
+   * 明暗どちらの配色でも白地に黒で固定する。カードの面は明るい配色では
+   * 白、暗い配色では黒になるので、面の色に追従させるとどちらかで必ず
+   * 沈む。白い面では縁と影で、暗い面では白さそのもので浮かせる。
+   */
+  background: #ffffff;
+  color: #111114;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.24);
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 0.15s ease, box-shadow 0.15s ease;
+}
+
+.menu-button:hover,
+.menu-button[aria-expanded="true"] {
+  background: #ececf0;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
+}
+
+/* ボタンと文字が重ならないよう、タイトルの右を空けておく */
+.title {
+  padding-right: 26px;
+}
+
+/* カードは overflow:hidden なので、メニューは body 直下に 1 つだけ置く */
+.card-menu {
+  position: fixed;
+  z-index: 50;
+  min-width: 168px;
+  padding: 5px;
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  background: var(--surface);
+  box-shadow: var(--shadow-hover);
+}
+
+.card-menu[hidden] {
+  display: none;
+}
+
+.menu-item {
+  display: block;
+  width: 100%;
+  padding: 8px 11px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.menu-item:hover,
+.menu-item:focus-visible {
+  outline: none;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+/* 消す操作は元に戻せない。色で他と区別する。 */
+.menu-item.is-danger {
+  color: #c0392b;
+}
+
+.menu-item.is-danger:hover,
+.menu-item.is-danger:focus-visible {
+  background: color-mix(in srgb, #c0392b 14%, transparent);
+}
+
+@media (prefers-color-scheme: dark) {
+  .menu-item.is-danger {
+    color: #ff8f80;
+  }
 }

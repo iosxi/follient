@@ -18,7 +18,7 @@
    * 頃に「画像なし」と判定された YouTube が、上限を 2MB にした後も 7 日間
    * 頭文字タイルのままだった。版が違うキャッシュは捨てて取り直す。
    */
-  const EXTRACT_VERSION = 2;
+  const EXTRACT_VERSION = 3;
 
   /** 画像が取れた結果の寿命。 */
   const CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -224,15 +224,75 @@
     return null;
   }
 
-  /** 本文中の大きめの画像。大きさが属性で分かるものだけを見る。 */
-  function imageFromBody(doc) {
-    const images = doc.querySelectorAll('img[src]');
-    for (const img of images) {
-      const width = parseInt(img.getAttribute('width') || '0', 10);
-      const height = parseInt(img.getAttribute('height') || '0', 10);
-      if (width >= 200 && height >= 120) return img.getAttribute('src');
+  /**
+   * アイコンや飾りに使われがちな名前。中身の画像ではないので避ける。
+   * 語の切れ目でだけ当てる。"galleries" の中の "ad" などを拾わないため。
+   */
+  const DECORATION_RE =
+    /(^|[\s\/_.-])(icons?|logos?|sprites?|spacer|blank|pixel|avatars?|badges?|banners?|btn|buttons?|arrows?|emoji|loading|loader|placeholder|thumb-default|ads?|advert)([\s\/_.-]|$)/i;
+
+  /**
+   * 画像の在り処。遅延読み込みのページは src に 1x1 の透明画像を置き、
+   * 本当の場所を data-* や srcset に持たせていることがある。
+   */
+  const IMAGE_ATTRS = ['src', 'data-src', 'data-original', 'data-lazy-src', 'data-echo'];
+
+  function imageUrlOf(img) {
+    for (const attr of IMAGE_ATTRS) {
+      const value = (img.getAttribute(attr) || '').trim();
+      // data: の中身は placeholder であることがほとんどで、カードには使えない
+      if (value && value.slice(0, 5) !== 'data:') return value;
+    }
+    for (const attr of ['srcset', 'data-srcset']) {
+      const set = img.getAttribute(attr);
+      if (!set) continue;
+      const first = set.split(',')[0].trim().split(/\s+/)[0];
+      if (first && first.slice(0, 5) !== 'data:') return first;
     }
     return null;
+  }
+
+  /**
+   * 本文中の、中身らしい画像を選ぶ。
+   *
+   * かつては width / height 属性が 200x120 以上のものだけを見ていた。
+   * だが今の HTML は寸法を CSS に置くので属性が無いほうが普通で、
+   * この段はほとんどのページで何も返していなかった。nyahentai.one と
+   * momon-ga.com がまさにそれで、OGP も JSON-LD の画像もフィードも持たず、
+   * 一覧の <img> にだけ絵があるのに寸法属性が無いため素通りしていた。
+   *
+   * そこで属性は「小さいと分かっているものを外す」ためだけに使い、
+   * 無いことは外す理由にしない。代わりに名前で飾りを避け、前のほうに
+   * 出てくるものを選ぶ。見出し画像はたいてい本文の先頭側にある。
+   */
+  function imageFromBody(doc) {
+    const images = doc.querySelectorAll('img');
+    let fallback = null;
+    let seen = 0;
+
+    for (const img of images) {
+      if (seen >= 40) break; // 深追いしても当たらない。ページ末尾は関連記事や広告
+      const src = imageUrlOf(img);
+      if (!src) continue;
+      seen += 1;
+
+      // ベクタは大半がロゴやアイコン
+      if (/\.svg(\?|#|$)/i.test(src)) continue;
+
+      const width = parseInt(img.getAttribute('width') || '0', 10);
+      const height = parseInt(img.getAttribute('height') || '0', 10);
+      // 寸法が分かっていて小さいなら、それは飾り
+      if ((width && width < 120) || (height && height < 120)) continue;
+
+      const hint =
+        src + ' ' + (img.getAttribute('class') || '') + ' ' + (img.getAttribute('alt') || '');
+      if (DECORATION_RE.test(hint)) continue;
+
+      // 属性で十分大きいと分かっているものが最優先
+      if (width >= 200 && height >= 120) return src;
+      if (!fallback) fallback = src;
+    }
+    return fallback;
   }
 
   /** ページが名乗っている RSS / Atom フィードの場所。 */
@@ -345,18 +405,24 @@
       siteName: siteName || null,
     };
   }
-
-  /** 本文を取ってきて文字列にする。HTML でもフィードでも使う。 */
-  async function fetchText(url, accept, typePattern) {
+  /**
+   * 本文を取ってきて文字列にする。HTML でもフィードでも使う。
+   *
+   * @param {boolean} [reload] HTTP キャッシュを無視して取り直す。
+   *   「サムネイル更新」からの取得で使う。保存済みの応答をそのまま
+   *   読み返しては、更新を選んだ意味が無いため。
+   */
+  async function fetchText(url, accept, typePattern, reload) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
     try {
       const response = await fetch(url, {
         credentials: 'omit',
         redirect: 'follow',
-        cache: 'force-cache',
+        cache: reload ? 'reload' : 'force-cache',
         signal: controller.signal,
-        headers: { Accept: accept },
+        // 言語を名乗らない要求を弾くサイトがある。ブラウザとして自然な形にする。
+        headers: { Accept: accept, 'Accept-Language': 'ja,en;q=0.8' },
       });
       if (!response.ok) {
         // 2xx でないことは、それ自体がカードに出す価値のある情報。
@@ -378,11 +444,12 @@
     }
   }
 
-  async function fetchMetadata(url) {
+  async function fetchMetadata(url, reload) {
     const page = await fetchText(
       url,
       'text/html,application/xhtml+xml',
-      /text\/html|application\/xhtml/i
+      /text\/html|application\/xhtml/i,
+      reload
     );
     const doc = new DOMParser().parseFromString(page.text, 'text/html');
     const meta = parseMetadata(doc, page.finalUrl);
@@ -399,7 +466,8 @@
       const feed = await fetchText(
         feedUrl,
         'application/rss+xml,application/atom+xml,application/xml,text/xml',
-        /xml/i
+        /xml/i,
+        reload
       );
       const feedDoc = new DOMParser().parseFromString(feed.text, 'application/xml');
       if (!feedDoc.querySelector('parsererror')) {
@@ -415,55 +483,64 @@
     return meta;
   }
 
-  async function getMetadata(url) {
+  /** 実際に取りにいく一回分。キャッシュの判断は呼び出し側でする。 */
+  async function runFetch(url, reload) {
+    await acquire();
+    try {
+      const data = await fetchMetadata(url, reload);
+      await writeCache(url, data);
+      return data;
+    } catch (e) {
+      // 失敗も短期キャッシュしたいところだが、一時的なオフライン等もあるので
+      // エラーは返すだけにして、ニュータブ側でフォールバック表示させる。
+      const result = {
+        title: null,
+        image: null,
+        description: null,
+        siteName: null,
+        error: String(e),
+      };
+      if (typeof e.httpStatus === 'number') {
+        result.httpStatus = e.httpStatus;
+      } else if (e && e.name === 'AbortError') {
+        result.httpStatus = 0;
+        result.netKind = 'timeout';
+      } else if (e instanceof TypeError) {
+        // 名前が引けない、接続できない等
+        result.httpStatus = 0;
+        result.netKind = 'network';
+      }
+      return result;
+    } finally {
+      release();
+    }
+  }
+
+  /**
+   * @param {boolean} [force] 保存してある結果も HTTP キャッシュも無視して
+   *   取り直す。「サムネイル更新」から来る。まとめ役 (inFlight) にも
+   *   載せない。載せると、通常の取得が始めた古いやり方の結果を
+   *   そのまま受け取ってしまうため。
+   */
+  async function getMetadata(url, force) {
     if (!isFetchable(url)) {
       return { title: null, image: null, description: null, siteName: null, skipped: true };
     }
+
+    if (force) return runFetch(url, true);
 
     const cached = await readCache(url);
     if (cached) return cached;
 
     if (inFlight.has(url)) return inFlight.get(url);
 
-    const task = (async () => {
-      await acquire();
-      try {
-        const data = await fetchMetadata(url);
-        await writeCache(url, data);
-        return data;
-      } catch (e) {
-        // 失敗も短期キャッシュしたいところだが、一時的なオフライン等もあるので
-        // エラーは返すだけにして、ニュータブ側でフォールバック表示させる。
-        const result = {
-          title: null,
-          image: null,
-          description: null,
-          siteName: null,
-          error: String(e),
-        };
-        if (typeof e.httpStatus === 'number') {
-          result.httpStatus = e.httpStatus;
-        } else if (e && e.name === 'AbortError') {
-          result.httpStatus = 0;
-          result.netKind = 'timeout';
-        } else if (e instanceof TypeError) {
-          // 名前が引けない、接続できない等
-          result.httpStatus = 0;
-          result.netKind = 'network';
-        }
-        return result;
-      } finally {
-        release();
-        inFlight.delete(url);
-      }
-    })();
-
+    const task = runFetch(url, false).finally(() => inFlight.delete(url));
     inFlight.set(url, task);
     return task;
   }
 
   browser.runtime.onMessage.addListener((message) => {
     if (!message || message.type !== 'follient:metadata') return undefined;
-    return getMetadata(message.url);
+    return getMetadata(message.url, message.force);
   });
 })();

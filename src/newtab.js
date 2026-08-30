@@ -12,6 +12,7 @@ const emptyMessage = document.getElementById('empty');
 const upLink = document.getElementById('up-link');
 const breadcrumb = document.getElementById('breadcrumb');
 const cardTemplate = document.getElementById('card-template');
+const cardMenu = document.getElementById('card-menu');
 
 /** grid-auto-rows / gap の実測値。masonry の span 計算に使う。 */
 let rowUnit = 4;
@@ -104,25 +105,73 @@ function createFolderIcon() {
   return svg;
 }
 
+/** 取得できなかったことを示す、斜線の入った画像のグリフ。 */
+function createNoImageIcon() {
+  const svg = document.createElementNS(SVG_NS, 'svg');
+  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.setAttribute('aria-hidden', 'true');
+  svg.setAttribute('fill', 'none');
+  svg.setAttribute('stroke', 'currentColor');
+  svg.setAttribute('stroke-width', '1.9');
+  svg.setAttribute('stroke-linecap', 'round');
+
+  const frame = document.createElementNS(SVG_NS, 'rect');
+  frame.setAttribute('x', '3.2');
+  frame.setAttribute('y', '4.6');
+  frame.setAttribute('width', '17.6');
+  frame.setAttribute('height', '14.8');
+  frame.setAttribute('rx', '2.4');
+
+  const hill = document.createElementNS(SVG_NS, 'path');
+  hill.setAttribute('d', 'M4 16l4.2-4.2 3.3 3.3');
+
+  const slash = document.createElementNS(SVG_NS, 'path');
+  slash.setAttribute('d', 'M3.6 20.4L20.4 3.6');
+
+  svg.appendChild(frame);
+  svg.appendChild(hill);
+  svg.appendChild(slash);
+  return svg;
+}
+
+/* ------------------------------------------------------------------ *
+ * サムネイルの途中経過
+ *
+ * 取りにいっている間と、どこにも画像が無かった場合とで顔を変える。
+ * 同じ頭文字タイルのままだと、待てば出るのか出ないのかが分からない。
+ * ------------------------------------------------------------------ */
+
+const THUMB_STATES = ['is-pending', 'is-nothumb'];
+
+function setThumbState(card, state, label) {
+  const box = card.querySelector('.thumb-state');
+  if (!box) return;
+
+  card.classList.remove(...THUMB_STATES);
+  const icon = box.querySelector('.state-icon');
+  icon.textContent = '';
+
+  if (!state) {
+    box.hidden = true;
+    layoutCard(card);
+    return;
+  }
+
+  card.classList.add(state);
+  if (state === 'is-nothumb') icon.appendChild(createNoImageIcon());
+  box.querySelector('.state-label').textContent = label;
+  box.hidden = false;
+  layoutCard(card);
+}
+
 /* ------------------------------------------------------------------ *
  * メタデータの遅延取得
  * ------------------------------------------------------------------ */
 
-function requestMetadata(url) {
+function requestMetadata(url, force) {
   return browser.runtime
-    .sendMessage({ type: 'follient:metadata', url })
+    .sendMessage({ type: 'follient:metadata', url, force: Boolean(force) })
     .catch(() => ({ title: null, image: null }));
-}
-
-/**
- * OGP 画像が無いページは、実際の見た目を撮った画像で代替する。
- * 撮影は相手サイトへの間隔を空けて順番に行われるため、すぐには返らない。
- * 出来上がりは follient:screenshot-ready で送られてくる。
- */
-function requestScreenshot(url) {
-  return browser.runtime
-    .sendMessage({ type: 'follient:screenshot', url })
-    .catch(() => ({ image: null }));
 }
 
 /**
@@ -157,6 +206,7 @@ function showStatusTile(card, status, kind) {
   const fallback = card.querySelector('.thumb-fallback');
   if (!fallback) return;
 
+  setThumbState(card, null);
   card.classList.add('is-status');
   card.classList.add(status >= 500 || status === 0 ? 'status-server' : 'status-client');
 
@@ -168,36 +218,26 @@ function showStatusTile(card, status, kind) {
   code.className = 'status-code';
   code.textContent = status === 0 ? '×' : String(status);
 
+
   const label = document.createElement('span');
   label.className = 'status-label';
   label.textContent = statusLabel(status, kind);
 
   fallback.appendChild(code);
   fallback.appendChild(label);
+  layoutCard(card);
 }
 
-/** 撮影待ちのカードを URL から引けるようにしておく。 */
-const cardsAwaitingShot = new Map();
-
-function rememberForShot(url, card) {
-  let list = cardsAwaitingShot.get(url);
-  if (!list) {
-    list = new Set();
-    cardsAwaitingShot.set(url, list);
-  }
-  list.add(card);
+/** 状態タイルで潰した代替面を、頭文字と色の姿に戻す。 */
+function restoreFallback(card) {
+  const fallback = card.querySelector('.thumb-fallback');
+  if (!fallback) return;
+  card.classList.remove('is-status', 'status-client', 'status-server');
+  const host = card.dataset.host || '';
+  fallback.textContent = '';
+  applyFallbackColor(fallback, host || card.dataset.url);
+  fallback.textContent = (host || '?').charAt(0).toUpperCase();
 }
-
-browser.runtime.onMessage.addListener((message) => {
-  if (!message || message.type !== 'follient:screenshot-ready') return undefined;
-  const list = cardsAwaitingShot.get(message.url);
-  if (!list) return undefined;
-  for (const card of list) {
-    if (card.isConnected) showImage(card, message.image);
-  }
-  cardsAwaitingShot.delete(message.url);
-  return undefined;
-});
 
 /** ビューエリアに入ったカードだけ OGP を取りにいく。 */
 const viewportObserver = new IntersectionObserver(
@@ -211,13 +251,17 @@ const viewportObserver = new IntersectionObserver(
   { rootMargin: '200px 0px' }
 );
 
-async function hydrateCard(card) {
+/**
+ * @param {boolean} [force] キャッシュの有効期間を無視して取り直す。
+ */
+async function hydrateCard(card, force) {
   const url = card.dataset.url;
   const myGeneration = generation;
-  const data = await requestMetadata(url);
-  if (myGeneration !== generation || !card.isConnected) return;
 
-  card.classList.remove('is-pending');
+  setThumbState(card, 'is-pending', '取得中');
+
+  const data = await requestMetadata(url, force);
+  if (myGeneration !== generation || !card.isConnected) return;
 
   // ブックマークに利用者自身が付けた名前があればそれを尊重し、
   // 既定のまま (= URL そのもの等) の場合だけ OG タイトルで補う。
@@ -231,24 +275,15 @@ async function hydrateCard(card) {
     return;
   }
 
-  // 2xx で返らなかったページは、撮影しても意味が無い。番号を出して終わる。
+  // 2xx で返らなかったページは、番号と意味を出して終わる。
   if (data && typeof data.httpStatus === 'number') {
     showStatusTile(card, data.httpStatus, data.netKind);
-    layoutCard(card);
     return;
   }
 
-  // OGP 画像が無いので、ページの見た目を撮ったものに切り替える
-  const shot = await requestScreenshot(url);
-  if (myGeneration !== generation || !card.isConnected) return;
-
-  if (shot && shot.image) {
-    showImage(card, shot.image);
-  } else {
-    // 撮影待ち。出来上がったら screenshot-ready で差し替わる
-    if (shot && shot.queued) rememberForShot(url, card);
-    layoutCard(card);
-  }
+  // 取り出せる画像がどこにも無かった。ここが行き止まりなので、
+  // 待たせずにそう出す。
+  setThumbState(card, 'is-nothumb', 'サムネイルなし');
 }
 
 function showImage(card, src) {
@@ -265,7 +300,7 @@ function showImage(card, src) {
         thumb.style.aspectRatio = String(Math.min(2.4, Math.max(0.62, ratio)));
       }
       img.classList.add('loaded');
-      layoutCard(card);
+      setThumbState(card, null);
     },
     { once: true }
   );
@@ -273,9 +308,10 @@ function showImage(card, src) {
   img.addEventListener(
     'error',
     () => {
-      // 画像だけ落ちた場合はフォールバック面を残したままにする
+      // 場所は分かったのに読めない (消えている、外部には配信しない等)。
+      // 黙って代替面へ戻すと「取れなかった」ことが伝わらないので明示する。
       img.removeAttribute('src');
-      layoutCard(card);
+      setThumbState(card, 'is-nothumb', 'サムネイルなし');
     },
     { once: true }
   );
@@ -283,22 +319,167 @@ function showImage(card, src) {
   img.src = src;
 }
 
+/** 「サムネイル更新」から呼ぶ。いまの絵を捨てて、はじめから取り直す。 */
+async function refreshThumbnail(card) {
+  const img = card.querySelector('.thumb-img');
+  if (img) {
+    img.classList.remove('loaded');
+    img.removeAttribute('src');
+  }
+  const thumb = card.querySelector('.thumb');
+  if (thumb) thumb.style.removeProperty('aspect-ratio');
+
+  restoreFallback(card);
+  await hydrateCard(card, true);
+}
+
+/* ------------------------------------------------------------------ *
+ * カードのメニュー
+ * ------------------------------------------------------------------ */
+
+/** いまメニューを開いているカード。閉じているときは null。 */
+let menuCard = null;
+
+function closeMenu() {
+  if (!menuCard) return;
+  const button = menuCard.querySelector('.menu-button');
+  if (button) button.setAttribute('aria-expanded', 'false');
+  menuCard = null;
+  cardMenu.hidden = true;
+  cardMenu.textContent = '';
+}
+
+function addMenuItem(label, danger, onChoose) {
+  const item = document.createElement('button');
+  item.type = 'button';
+  item.className = danger ? 'menu-item is-danger' : 'menu-item';
+  item.setAttribute('role', 'menuitem');
+  item.textContent = label;
+  item.addEventListener('click', () => {
+    closeMenu();
+    onChoose();
+  });
+  cardMenu.appendChild(item);
+}
+
+/** ボタンの下に出す。下に入らなければ上へ、右に溢れれば左へ寄せる。 */
+function placeMenu(button) {
+  const anchor = button.getBoundingClientRect();
+  const size = cardMenu.getBoundingClientRect();
+  const margin = 8;
+
+  let left = anchor.right - size.width;
+  left = Math.min(left, window.innerWidth - size.width - margin);
+  left = Math.max(margin, left);
+
+  let top = anchor.bottom + 4;
+  if (top + size.height > window.innerHeight - margin) {
+    top = Math.max(margin, anchor.top - size.height - 4);
+  }
+
+  cardMenu.style.left = Math.round(left) + 'px';
+  cardMenu.style.top = Math.round(top) + 'px';
+}
+
+function openMenu(card) {
+  const wasOpen = menuCard === card;
+  closeMenu();
+  if (wasOpen) return; // 同じボタンをもう一度押したら閉じるだけ
+
+  const isFolder = card.dataset.kind === 'folder';
+
+  // フォルダには撮るものが無いので、更新はブックマークにだけ出す
+  if (!isFolder) addMenuItem('サムネイル更新', false, () => refreshThumbnail(card));
+  addMenuItem(isFolder ? 'フォルダ削除' : 'ブックマーク削除', true, () => removeNode(card));
+
+  const button = card.querySelector('.menu-button');
+  menuCard = card;
+  cardMenu.hidden = false;
+  placeMenu(button);
+  button.setAttribute('aria-expanded', 'true');
+
+  const first = cardMenu.querySelector('.menu-item');
+  if (first) first.focus();
+}
+
+/**
+ * ブックマークを消す。
+ *
+ * フォルダは中身ごと消えて元に戻せないため、空でなければ必ず確認を取る。
+ * 1 件のブックマークはブラウザ本体の操作と同じく、そのまま消す。
+ */
+async function removeNode(card) {
+  const id = card.dataset.id;
+  if (!id) return;
+
+  try {
+    if (card.dataset.kind === 'folder') {
+      let count = 0;
+      try {
+        count = (await browser.bookmarks.getChildren(id)).length;
+      } catch (e) {
+        count = 0;
+      }
+      const name = card.dataset.name || 'このフォルダ';
+      const ask = '「' + name + '」を中身 ' + count + ' 件ごと削除します。元に戻せません。';
+      if (count > 0 && !window.confirm(ask)) return;
+      await browser.bookmarks.removeTree(id);
+    } else {
+      await browser.bookmarks.remove(id);
+    }
+  } catch (e) {
+    console.warn('follient: 削除できませんでした', e);
+  }
+  // 消えた結果の描画は bookmarks.onRemoved が受け持つ
+}
+
+cardMenu.addEventListener('click', (event) => event.stopPropagation());
+
+document.addEventListener('click', closeMenu);
+document.addEventListener('keydown', (event) => {
+  if (event.key !== 'Escape' || !menuCard) return;
+  const button = menuCard.querySelector('.menu-button');
+  closeMenu();
+  if (button) button.focus();
+});
+// 開いたまま画面が動くとボタンから離れてしまうので、その場で閉じる
+window.addEventListener('scroll', closeMenu, true);
+window.addEventListener('resize', closeMenu);
+
 /* ------------------------------------------------------------------ *
  * カード生成
  * ------------------------------------------------------------------ */
 
-function createFolderCard(node, childCount) {
+/** テンプレートを複製し、どのカードにも要る配線を済ませて返す。 */
+function createCardShell(node) {
   const card = cardTemplate.content.firstElementChild.cloneNode(true);
+  card.dataset.id = node.id;
+
+  card.querySelector('.menu-button').addEventListener('click', (event) => {
+    // カードの大部分はリンクなので、押した先へ移動させない
+    event.preventDefault();
+    event.stopPropagation();
+    openMenu(card);
+  });
+
+  return card;
+}
+
+function createFolderCard(node, childCount) {
+  const card = createCardShell(node);
   card.classList.add('is-folder');
-  card.href = '#f/' + encodeURIComponent(node.id);
+  card.dataset.kind = 'folder';
+  card.querySelector('.card-link').href = '#f/' + encodeURIComponent(node.id);
 
   const fallback = card.querySelector('.thumb-fallback');
   fallback.appendChild(createFolderIcon());
   applyFallbackColor(fallback, node.title || node.id);
 
   card.querySelector('.thumb-img').remove();
+  card.querySelector('.thumb-state').remove();
 
   const title = node.title || '(名称未設定のフォルダ)';
+  card.dataset.name = title;
   card.querySelector('.title').textContent = title;
   card.querySelector('.host').textContent =
     childCount === 0 ? '空のフォルダ' : childCount + ' 件';
@@ -308,12 +489,13 @@ function createFolderCard(node, childCount) {
 }
 
 function createBookmarkCard(node) {
-  const card = cardTemplate.content.firstElementChild.cloneNode(true);
-  card.classList.add('is-pending');
-  card.href = node.url;
+  const card = createCardShell(node);
+  card.dataset.kind = 'bookmark';
   card.dataset.url = node.url;
+  card.querySelector('.card-link').href = node.url;
 
   const host = hostOf(node.url);
+  card.dataset.host = host;
   const fallback = card.querySelector('.thumb-fallback');
   applyFallbackColor(fallback, host || node.url);
   fallback.textContent = (host || '?').charAt(0).toUpperCase();
@@ -322,7 +504,9 @@ function createBookmarkCard(node) {
   const hasOwnTitle = Boolean(node.title) && node.title !== node.url;
   card.dataset.useOgTitle = hasOwnTitle ? 'false' : 'true';
 
-  card.querySelector('.title').textContent = hasOwnTitle ? node.title : host || node.url;
+  const label = hasOwnTitle ? node.title : host || node.url;
+  card.dataset.name = label;
+  card.querySelector('.title').textContent = label;
   card.querySelector('.host').textContent = host;
   card.title = (node.title || node.url) + '\n' + node.url;
 
@@ -408,9 +592,9 @@ async function render() {
   generation += 1;
   const myGeneration = generation;
 
+  closeMenu();
   viewportObserver.disconnect();
   cardResizeObserver.disconnect();
-  cardsAwaitingShot.clear();
   grid.textContent = '';
   emptyMessage.hidden = true;
 

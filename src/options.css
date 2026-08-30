@@ -126,11 +126,6 @@ h1 {
   font-size: 12px;
 }
 
-/* 撮影だけは性質が違うので、見た目でも区別する */
-.sources li.capture {
-  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
-}
-
 .saved {
   margin: 14px 0 0;
   color: var(--accent);

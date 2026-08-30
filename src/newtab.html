@@ -19,17 +19,36 @@
       <p class="empty" id="empty" hidden>このフォルダにはブックマークがありません。</p>
     </main>
 
+    <!-- カードごとに持たせるとカードの overflow:hidden で切られるため、
+         メニューは 1 つだけ作って body 直下に置き、開くたびに位置を合わせる。 -->
+    <div class="card-menu" id="card-menu" role="menu" hidden></div>
+
     <template id="card-template">
-      <a class="card" href="#">
-        <div class="thumb">
-          <div class="thumb-fallback"></div>
-          <img class="thumb-img" alt="" decoding="async" />
-        </div>
-        <div class="meta">
-          <div class="title"></div>
-          <div class="host"></div>
-        </div>
-      </a>
+      <div class="card">
+        <a class="card-link" href="#">
+          <div class="thumb">
+            <div class="thumb-fallback"></div>
+            <img class="thumb-img" alt="" decoding="async" />
+            <div class="thumb-state" hidden>
+              <span class="state-icon" aria-hidden="true"></span>
+              <span class="state-label"></span>
+            </div>
+          </div>
+          <div class="meta">
+            <div class="title"></div>
+            <div class="host"></div>
+          </div>
+        </a>
+        <button
+          class="menu-button"
+          type="button"
+          aria-haspopup="true"
+          aria-expanded="false"
+          aria-label="このカードの操作"
+        >
+          <span aria-hidden="true">⋮</span>
+        </button>
+      </div>
     </template>
 
     <script src="defaults.js"></script>
