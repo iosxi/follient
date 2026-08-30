@@ -529,18 +529,3 @@ main {
   background: color-mix(in srgb, var(--accent) 12%, transparent);
 }
 
-/* 消す操作は元に戻せない。色で他と区別する。 */
-.menu-item.is-danger {
-  color: #c0392b;
-}
-
-.menu-item.is-danger:hover,
-.menu-item.is-danger:focus-visible {
-  background: color-mix(in srgb, #c0392b 14%, transparent);
-}
-
-@media (prefers-color-scheme: dark) {
-  .menu-item.is-danger {
-    color: #ff8f80;
-  }
-}

@@ -478,10 +478,10 @@ function closeMenu() {
   cardMenu.textContent = '';
 }
 
-function addMenuItem(label, danger, onChoose) {
+function addMenuItem(label, onChoose) {
   const item = document.createElement('button');
   item.type = 'button';
-  item.className = danger ? 'menu-item is-danger' : 'menu-item';
+  item.className = 'menu-item';
   item.setAttribute('role', 'menuitem');
   item.textContent = label;
   item.addEventListener('click', () => {
@@ -515,11 +515,10 @@ function openMenu(card) {
   closeMenu();
   if (wasOpen) return; // 同じボタンをもう一度押したら閉じるだけ
 
-  const isFolder = card.dataset.kind === 'folder';
-
-  // フォルダには撮るものが無いので、更新はブックマークにだけ出す
-  if (!isFolder) addMenuItem('サムネイル更新', false, () => refreshThumbnail(card));
-  addMenuItem(isFolder ? 'フォルダ削除' : 'ブックマーク削除', true, () => removeNode(card));
+  // いまはサムネイルの取り直しだけ。フォルダには撮るものが無いので
+  // ボタン自体を出しておらず、ここへは来ない。
+  if (card.dataset.kind === 'folder') return;
+  addMenuItem('サムネイル更新', () => refreshThumbnail(card));
 
   const button = card.querySelector('.menu-button');
   menuCard = card;
@@ -529,37 +528,6 @@ function openMenu(card) {
 
   const first = cardMenu.querySelector('.menu-item');
   if (first) first.focus();
-}
-
-/**
- * ブックマークを消す。
- *
- * フォルダは中身ごと消えて元に戻せないため、空でなければ必ず確認を取る。
- * 1 件のブックマークはブラウザ本体の操作と同じく、そのまま消す。
- */
-async function removeNode(card) {
-  const id = card.dataset.id;
-  if (!id) return;
-
-  try {
-    if (card.dataset.kind === 'folder') {
-      let count = 0;
-      try {
-        count = (await browser.bookmarks.getChildren(id)).length;
-      } catch (e) {
-        count = 0;
-      }
-      const name = card.dataset.name || 'このフォルダ';
-      const ask = '「' + name + '」を中身 ' + count + ' 件ごと削除します。元に戻せません。';
-      if (count > 0 && !window.confirm(ask)) return;
-      await browser.bookmarks.removeTree(id);
-    } else {
-      await browser.bookmarks.remove(id);
-    }
-  } catch (e) {
-    console.warn('follient: 削除できませんでした', e);
-  }
-  // 消えた結果の描画は bookmarks.onRemoved が受け持つ
 }
 
 cardMenu.addEventListener('click', (event) => event.stopPropagation());
@@ -607,9 +575,10 @@ function createFolderCard(node, childCount) {
   card.querySelector('.thumb-img').remove();
   card.querySelector('.thumb-state').remove();
   card.querySelector('.order-badge').remove();
+  // 出せる操作が無いので、ボタン自体を置かない
+  card.querySelector('.menu-button').remove();
 
   const title = node.title || '(名称未設定のフォルダ)';
-  card.dataset.name = title;
   card.querySelector('.title').textContent = title;
   card.querySelector('.host').textContent =
     childCount === 0 ? '空のフォルダ' : childCount + ' 件';
@@ -641,7 +610,6 @@ function createBookmarkCard(node, order) {
   card.dataset.useOgTitle = hasOwnTitle ? 'false' : 'true';
 
   const label = hasOwnTitle ? node.title : host || node.url;
-  card.dataset.name = label;
   card.querySelector('.title').textContent = label;
   card.querySelector('.host').textContent = host;
   card.title = (node.title || node.url) + '\n' + node.url;
