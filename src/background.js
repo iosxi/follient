@@ -105,6 +105,157 @@
     }
   }
 
+  /* ------------------------------------------------------------------ *
+   * サムネイルの実体を保存する
+   *
+   * 候補の URL だけを覚えていても、開くたびに相手から取り直すことになる。
+   * 相手が不安定だと、一度出たサムネイルが次に開いたとき出ない。実際
+   * rawkuma.net の 500 件フォルダで「読めていたものが元に戻る」という
+   * 報告が出た。一度読めた絵は縮小して手元に持ち、次からはそれを出す。
+   *
+   * 取得は背景側で行う。ニュータブの <img> は他所のオリジンなので canvas が
+   * 汚染され、画素を読み出せない。背景はホスト権限があるので普通に取れる。
+   * ------------------------------------------------------------------ */
+
+  const THUMB_PREFIX = 'img:';
+  const THUMB_INDEX_KEY = 'img:index';
+
+  /** 保存しておく枚数の上限。超えたら古いものから捨てる。 */
+  const THUMB_MAX = 800;
+
+  /** 保存する画像の最大幅と質。カード幅の 2 倍あれば足りる。 */
+  const THUMB_MAX_WIDTH = 480;
+  const THUMB_QUALITY = 0.7;
+
+  /** 元画像の読み込み上限。これより大きいものは縮小せず諦める。 */
+  const THUMB_SOURCE_MAX_BYTES = 8 * 1024 * 1024;
+
+  const THUMB_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+
+  /** 同じページの保存が二重に走らないようにする。 */
+  const savingThumb = new Set();
+
+  function thumbKey(url) {
+    return THUMB_PREFIX + url;
+  }
+
+  async function readThumb(url) {
+    try {
+      const key = thumbKey(url);
+      const stored = await browser.storage.local.get(key);
+      const entry = stored[key];
+      if (!entry || !entry.image) return null;
+      if (Date.now() - entry.at > THUMB_TTL_MS) return null;
+      return entry.image;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  /** 保存枚数が上限を超えたら、古いものから消す。 */
+  async function trimThumbs(index) {
+    if (index.length <= THUMB_MAX) return index;
+    index.sort((a, b) => a.at - b.at);
+    const drop = index.slice(0, index.length - THUMB_MAX);
+    await browser.storage.local.remove(drop.map((e) => thumbKey(e.url)));
+    return index.slice(index.length - THUMB_MAX);
+  }
+
+  async function writeThumb(url, image) {
+    try {
+      await browser.storage.local.set({ [thumbKey(url)]: { at: Date.now(), image } });
+
+      const stored = await browser.storage.local.get(THUMB_INDEX_KEY);
+      let index = Array.isArray(stored[THUMB_INDEX_KEY]) ? stored[THUMB_INDEX_KEY] : [];
+      index = index.filter((entry) => entry.url !== url);
+      index.push({ url, at: Date.now() });
+      index = await trimThumbs(index);
+      await browser.storage.local.set({ [THUMB_INDEX_KEY]: index });
+    } catch (e) {
+      // 容量超過などは致命的ではない。次に開いたときまた試す。
+      console.warn('follient: thumbnail cache write failed', e);
+    }
+  }
+
+  function loadImageElement(src) {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = () => reject(new Error('image decode failed'));
+      img.src = src;
+    });
+  }
+
+  /**
+   * 縮小して JPEG の data URL にする。
+   * blob: は拡張機能自身のオリジンなので canvas は汚染されない。
+   * JPEG は透過を持てないので、透明な部分が黒くならないよう白で下地を敷く。
+   */
+  async function shrinkToDataUrl(blob) {
+    const objectUrl = URL.createObjectURL(blob);
+    try {
+      const img = await loadImageElement(objectUrl);
+      const width = img.naturalWidth;
+      const height = img.naturalHeight;
+      if (!width || !height) throw new Error('image has no size');
+
+      const scale = Math.min(1, THUMB_MAX_WIDTH / width);
+      const outWidth = Math.max(1, Math.round(width * scale));
+      const outHeight = Math.max(1, Math.round(height * scale));
+
+      const canvas = document.createElement('canvas');
+      canvas.width = outWidth;
+      canvas.height = outHeight;
+      const ctx = canvas.getContext('2d');
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, outWidth, outHeight);
+      ctx.drawImage(img, 0, 0, outWidth, outHeight);
+
+      return canvas.toDataURL('image/jpeg', THUMB_QUALITY);
+    } finally {
+      URL.revokeObjectURL(objectUrl);
+    }
+  }
+
+  /**
+   * ニュータブで読めた画像を、背景でも取り直して保存する。
+   * たいていはブラウザのキャッシュに載っているので、網には出ない。
+   */
+  async function saveThumb(pageUrl, imageUrl) {
+    if (!isFetchable(imageUrl)) return;
+    if (savingThumb.has(pageUrl)) return;
+    savingThumb.add(pageUrl);
+
+    await acquire();
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+      let blob;
+      try {
+        const response = await fetch(imageUrl, {
+          credentials: 'omit',
+          redirect: 'follow',
+          cache: 'force-cache',
+          signal: controller.signal,
+        });
+        if (!response.ok) return;
+        const type = response.headers.get('content-type') || '';
+        if (type && !/^image\//i.test(type)) return;
+        blob = await response.blob();
+      } finally {
+        clearTimeout(timer);
+      }
+      if (!blob || blob.size === 0 || blob.size > THUMB_SOURCE_MAX_BYTES) return;
+
+      await writeThumb(pageUrl, await shrinkToDataUrl(blob));
+    } catch (e) {
+      // 保存できなくても表示は済んでいる。次に開いたときまた試す。
+    } finally {
+      release();
+      savingThumb.delete(pageUrl);
+    }
+  }
+
   /**
    * Content-Type ヘッダと meta タグから文字コードを推定してデコードする。
    * 日本語サイトには Shift_JIS / EUC-JP がまだ残っているため。
@@ -591,6 +742,14 @@
     }
     if (message.type === 'follient:image-ok') {
       return promoteImage(message.url, message.image).catch(() => {});
+    }
+    if (message.type === 'follient:thumb-get') {
+      return readThumb(message.url).then((image) => ({ image }));
+    }
+    if (message.type === 'follient:thumb-save') {
+      // 保存の完了は待たせない。表示はもう済んでいる。
+      saveThumb(message.url, message.image);
+      return Promise.resolve({ accepted: true });
     }
     return undefined;
   });

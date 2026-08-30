@@ -12,6 +12,11 @@ var FOLLIENT_DEFAULTS = {
   sourceJsonLd: true, // 3. JSON-LD
   sourceFeed: true, // 4. RSS / Atom
   sourceBodyImg: true, // 5. 本文中の大きな img
+
+  // 画像が読めなかったときのやり直し。相手が短時間の要求を絞ることが
+  // あるので、既定では待ち時間を倍々に伸ばす。
+  retryMax: 6, // 一巡して全部だめだったあと、やり直す回数
+  retryExponential: true, // 待ち時間を 1 回ごとに倍にする
 };
 
 /** 保存されている設定を既定値で埋めて返す。 */

@@ -14,6 +14,17 @@ const breadcrumb = document.getElementById('breadcrumb');
 const cardTemplate = document.getElementById('card-template');
 const cardMenu = document.getElementById('card-menu');
 
+/** 設定。既定値で動き出し、読めたら差し替える。 */
+let settings = Object.assign({}, FOLLIENT_DEFAULTS);
+follientLoadSettings().then((loaded) => {
+  settings = loaded;
+});
+browser.storage.onChanged.addListener((changes, area) => {
+  if (area === 'local' && changes.settings) {
+    settings = Object.assign({}, FOLLIENT_DEFAULTS, changes.settings.newValue || {});
+  }
+});
+
 /** grid-auto-rows / gap の実測値。masonry の span 計算に使う。 */
 let rowUnit = 4;
 let gapUnit = 18;
@@ -279,15 +290,27 @@ async function hydrateCard(card, force) {
     card.title = data.title + '\n' + url;
   }
 
-  const candidates = imageListOf(data);
-  if (candidates.length) {
-    showImage(card, candidates);
+  // 2xx で返らなかったページは、番号と意味を出して終わる。
+  // 保存してある絵より先に見る。消えたブックマークだと分かるほうが、
+  // 昔の絵が出続けるより役に立つ。
+  if (data && typeof data.httpStatus === 'number') {
+    showStatusTile(card, data.httpStatus, data.netKind);
     return;
   }
 
-  // 2xx で返らなかったページは、番号と意味を出して終わる。
-  if (data && typeof data.httpStatus === 'number') {
-    showStatusTile(card, data.httpStatus, data.netKind);
+  // 一度読めた絵は手元にある。相手の機嫌に左右されず、網にも出ない。
+  if (!force) {
+    const stored = await requestStoredThumb(url);
+    if (myGeneration !== generation || !card.isConnected) return;
+    if (stored && stored.image) {
+      showImage(card, [stored.image]);
+      return;
+    }
+  }
+
+  const candidates = imageListOf(data);
+  if (candidates.length) {
+    showImage(card, candidates);
     return;
   }
 
@@ -297,14 +320,50 @@ async function hydrateCard(card, force) {
 }
 
 /**
- * 候補を一巡して全部だめだったあと、間を空けてやり直す回数と、その基準時間。
+ * やり直しの基準時間。実際の待ち時間はここから設定に従って伸ばす。
  *
  * rawkuma.net の画像は Cloudflare のエッジにある間だけ 200 で返り、
  * エッジから落ちるとオリジンに無いので 404 になる。実測で 8 本中 2 本しか
  * 通らなかった。1 回の失敗で諦めると、生きている絵を捨ててしまう。
  */
-const IMAGE_RETRY_ROUNDS = 2;
 const IMAGE_RETRY_BASE_MS = 1200;
+
+/** 待ち時間の上限。倍々に伸ばしても、これ以上は待たせない。 */
+const IMAGE_RETRY_MAX_WAIT_MS = 60000;
+
+/**
+ * 何回目のやり直しを、どれだけ待ってから始めるか。
+ *
+ * 500 件のフォルダで 30 件ほどが落ちた。短い間隔で叩き直すと、相手の
+ * 制限にかかって逆効果になる。既定では 1 回ごとに倍にして間を空ける。
+ * 同じ瞬間に何百枚も動かないよう、最後に乱数でばらす。
+ */
+function retryWaitMs(round) {
+  const step = settings.retryExponential ? Math.pow(2, round - 1) : round;
+  // ばらしたあとで上限をかける。上限が実際の待ち時間の上限になるように。
+  const wait = IMAGE_RETRY_BASE_MS * step * (1 + Math.random());
+  return Math.min(wait, IMAGE_RETRY_MAX_WAIT_MS);
+}
+
+/** 設定は文字列で入っていることがある。数として使える形に均す。 */
+function retryRounds() {
+  const value = parseInt(settings.retryMax, 10);
+  return Number.isFinite(value) && value >= 0 ? value : FOLLIENT_DEFAULTS.retryMax;
+}
+
+/** 手元に持っているサムネイルを聞く。あれば網に出ずに済む。 */
+function requestStoredThumb(url) {
+  return browser.runtime
+    .sendMessage({ type: 'follient:thumb-get', url })
+    .catch(() => null);
+}
+
+/** 読めた絵を手元に残すよう頼む。完了は待たない。 */
+function saveThumb(pageUrl, imageUrl) {
+  browser.runtime
+    .sendMessage({ type: 'follient:thumb-save', url: pageUrl, image: imageUrl })
+    .catch(() => {});
+}
 
 /** 読めた URL を背景に教える。次からはそれが先頭になる。 */
 function reportWorkingImage(pageUrl, imageUrl) {
@@ -333,7 +392,7 @@ function showImage(card, sources) {
 
   const attempt = () => {
     if (index >= list.length) {
-      if (round >= IMAGE_RETRY_ROUNDS) {
+      if (round >= retryRounds()) {
         // 場所は分かったのに、どれも読めなかった (消えている、外部には
         // 配信しない等)。黙って代替面へ戻すと伝わらないので明示する。
         img.removeAttribute('src');
@@ -342,8 +401,7 @@ function showImage(card, sources) {
       }
       round += 1;
       index = 0;
-      // 何百枚もが同時に叩き直さないよう、待ち時間をばらす
-      const wait = IMAGE_RETRY_BASE_MS * round * (1 + Math.random());
+      const wait = retryWaitMs(round);
       setTimeout(() => {
         if (card.isConnected) attempt();
       }, wait);
@@ -368,6 +426,8 @@ function showImage(card, sources) {
       setThumbState(card, null);
       // 先頭が死んでいた。次に開くときは、これを先に試させる
       if (index > 1) reportWorkingImage(card.dataset.url, src);
+      // 網から読めた絵は手元に残す。次からは取り直さない。
+      if (/^https?:/i.test(src)) saveThumb(card.dataset.url, src);
     };
 
     img.onerror = () => {

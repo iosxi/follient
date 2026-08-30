@@ -72,7 +72,7 @@ h1 {
 
 /* チェックボックスを角丸のスライドスイッチとして描く。
    input のままなので、キーボード操作も読み上げも普通に効く。 */
-.sources input {
+.sources input[type="checkbox"] {
   grid-row: 1 / 3;
   align-self: start;
   margin: 2px 0 0;
@@ -89,7 +89,7 @@ h1 {
   transition: background 0.18s ease, border-color 0.18s ease;
 }
 
-.sources input::after {
+.sources input[type="checkbox"]::after {
   content: "";
   position: absolute;
   top: 2px;
@@ -102,18 +102,46 @@ h1 {
   transition: transform 0.18s ease;
 }
 
-.sources input:checked {
+.sources input[type="checkbox"]:checked {
   background: var(--accent);
   border-color: var(--accent);
 }
 
-.sources input:checked::after {
+.sources input[type="checkbox"]:checked::after {
   transform: translateX(17px);
 }
 
 .sources input:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
+}
+
+/* 数値を入れる行。スイッチと違い、名前の右に入力を置く */
+.sources label.number {
+  grid-template-columns: 1fr auto;
+  align-items: center;
+}
+
+.sources label.number .name {
+  grid-column: 1;
+}
+
+.sources input[type="number"] {
+  grid-column: 2;
+  grid-row: 1;
+  width: 68px;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.sources label.number .note {
+  grid-column: 1 / 3;
 }
 
 .name {
