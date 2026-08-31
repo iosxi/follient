@@ -8,9 +8,9 @@
   --shadow: 0 1px 2px rgba(0, 0, 0, 0.05), 0 8px 24px rgba(0, 0, 0, 0.06);
   --shadow-hover: 0 2px 4px rgba(0, 0, 0, 0.06), 0 16px 40px rgba(0, 0, 0, 0.12);
 
-  /* 送り箱のつまみと溝。--border では薄すぎて、あるのに見えなかった */
-  --scroll-thumb: rgba(0, 0, 0, 0.32);
-  --scroll-track: rgba(0, 0, 0, 0.07);
+  /* 送り箱のつまみと溝。カードの面から思い切り離す (DEVELOPMENT.md に表) */
+  --scroll-thumb: #5f6272;
+  --scroll-track: #dfe0e8;
 
   --gap: 18px;
   --row: 4px; /* masonry の行単位。JS が span を計算する */
@@ -27,8 +27,8 @@
     --accent: #8a97ff;
     --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 24px rgba(0, 0, 0, 0.3);
     --shadow-hover: 0 2px 4px rgba(0, 0, 0, 0.5), 0 16px 40px rgba(0, 0, 0, 0.45);
-    --scroll-thumb: rgba(255, 255, 255, 0.34);
-    --scroll-track: rgba(255, 255, 255, 0.08);
+    --scroll-thumb: #b4b9cc;
+    --scroll-track: #3c3c48;
   }
 }
 
@@ -443,18 +443,42 @@ main {
 
 /* ---------- 話数 (rawkuma 専用) ---------- */
 
-/* 重ねたカードのリンクより上に出す。でないと自分が押せない。 */
+/*
+ * 棒は土台のものを使わない。自前で置く。
+ *
+ * Windows 11 の Firefox は重ね置きの棒で、触っている間しか出てこない。
+ * scrollbar-color を auto 以外にすれば場所を取る棒に変わると考えて 3 度
+ * 色をいじったが、変わったのは色だけで、消える性質は一度も直らなかった。
+ * scrollbar-width / scrollbar-color でできるのは「土台の棒に色を塗る」ことと
+ * 「細くする・消す」ことだけで、出しっぱなしにはできない。OS 側の「スクロール
+ * バーを常に表示する」に従うので、こちらから決められない。
+ *
+ * そこで scrollbar-width: none で土台の棒を消し、.chapter-bar と
+ * .chapter-thumb を自分で描く。丈と位置は JS が scrollTop / scrollHeight から
+ * 出す。掴んで動かせるし、溝を押せばそこへ飛ぶ。
+ *
+ * 包みを分けているのは、棒を箱の外に置くため。箱の中に入れると一緒に送られて
+ * しまう。重ねたカードのリンクより上に出すのもこの包みの仕事 (z-index)。
+ * でないと棒が押せない。
+ */
+.chapters-wrap {
+  /* 棒の幅。よくある自前の棒と同じくらい (Windows の標準は 17px で、
+     250px ほどのカードには太すぎる) */
+  --chapter-bar-w: 12px;
+
+  position: relative;
+  z-index: 2;
+  margin: 1px 0 2px;
+}
+
 .chapters {
   /* a の見た目の高さ。font-size 11.5px x line-height 1.6 + 上下の padding */
   --chapter-row: calc(11.5px * 1.6 + 2px);
   --chapter-gap: 2px;
 
-  position: relative;
-  z-index: 2;
   display: flex;
   flex-direction: column;
   gap: var(--chapter-gap);
-  margin: 1px 0 2px;
 
   /*
    * 何話あっても 3 行だけ見せ、残りは箱の中で送る。全話を並べてもカードの
@@ -464,20 +488,31 @@ main {
   max-height: calc(var(--chapter-row) * 3 + var(--chapter-gap) * 2);
   overflow-y: auto;
 
-  /*
-   * つまみは出しっぱなしにする。Firefox は既定では重ね置きの細い棒で、
-   * 触っている間しか出てこない。送り箱だと気づけないので、色を明示して
-   * 場所を取る昔ながらの棒にする (scrollbar-color を auto 以外にすると
-   * そうなる)。溝の幅は 3 話に満たない箱でも先に空けておき、話数が増えても
-   * 文字の右端が動かないようにする。
-   */
-  scrollbar-width: thin;
-  scrollbar-color: var(--scroll-thumb) var(--scroll-track);
-  scrollbar-gutter: stable;
+  /* 土台の棒は消す。場所も取らないので、自前の棒のぶんは padding で空ける */
+  scrollbar-width: none;
+  padding-right: calc(var(--chapter-bar-w) + 2px);
 }
 
-.chapters:empty {
-  display: none;
+/* 溝。話数が 3 行に収まっていても出したままにする (つまみが箱いっぱいになる) */
+.chapter-bar {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: var(--chapter-bar-w);
+  border-radius: calc(var(--chapter-bar-w) / 2);
+  background-color: var(--scroll-track);
+  cursor: default;
+}
+
+/* つまみ。丈と位置は JS が入れる */
+.chapter-thumb {
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 0;
+  border-radius: calc(var(--chapter-bar-w) / 2);
+  background-color: var(--scroll-thumb);
 }
 
 /*

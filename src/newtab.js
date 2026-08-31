@@ -394,6 +394,84 @@ function appendChapters(box) {
   }
   rest.at = until;
   box.appendChild(batch);
+  syncChapterBar(box);
+}
+
+/** つまみをこれ以上短くしない丈。500 話あっても摘める大きさを残す。 */
+const CHAPTER_THUMB_MIN_PX = 18;
+
+/**
+ * 送り箱の棒を描き直す。
+ *
+ * 土台の棒は使えない。Windows 11 の Firefox は重ね置きで、触っている間しか
+ * 出てこない。scrollbar-color は色を塗り替えるだけで、出しっぱなしにはできない
+ * (OS の「スクロールバーを常に表示する」に従う)。そこで自分で描いている。
+ *
+ * 丈も位置も px で出す。scrollHeight に対する割合を % で渡す手もあるが、
+ * 500 話ある箱ではつまみが 1px を切って摘めなくなる。最低の丈を決めるなら
+ * px で計るしかない。位置は transform で動かす (レイアウトが起きない)。
+ */
+function syncChapterBar(box) {
+  const wrap = box.parentElement;
+  const thumb = wrap && wrap.querySelector('.chapter-thumb');
+  if (!thumb) return;
+
+  const view = box.clientHeight;
+  const total = box.scrollHeight;
+  if (!view || !total) return;
+
+  const height = Math.max(CHAPTER_THUMB_MIN_PX, Math.round((view / total) * view));
+  const room = Math.max(0, view - height);
+  const scrolled = Math.max(0, total - view);
+  const top = scrolled > 0 ? Math.round((box.scrollTop / scrolled) * room) : 0;
+
+  thumb.style.height = height + 'px';
+  thumb.style.transform = 'translateY(' + top + 'px)';
+}
+
+/**
+ * つまみを掴めるようにする。溝を押したときは、そこへ飛ばす。
+ *
+ * 箱 1 つにつき 1 回だけ呼ぶ。カードは使い回されるので、話数を並べ直すたびに
+ * 付け直す必要はない。
+ */
+function bindChapterBar(box) {
+  const wrap = box.parentElement;
+  const bar = wrap.querySelector('.chapter-bar');
+  const thumb = wrap.querySelector('.chapter-thumb');
+  if (!bar || !thumb) return;
+
+  /** つまみの上端から何 px のところを掴んだか。 */
+  let grabAt = 0;
+
+  const moveTo = (clientY) => {
+    const view = box.clientHeight;
+    const room = view - thumb.offsetHeight;
+    if (room <= 0) return;
+    const top = clientY - bar.getBoundingClientRect().top - grabAt;
+    const ratio = Math.min(1, Math.max(0, top / room));
+    box.scrollTop = ratio * (box.scrollHeight - view);
+  };
+
+  bar.addEventListener('pointerdown', (event) => {
+    // 溝を押したときは、つまみの真ん中がそこへ来るように飛ばす
+    grabAt =
+      event.target === thumb
+        ? event.clientY - thumb.getBoundingClientRect().top
+        : thumb.offsetHeight / 2;
+    bar.setPointerCapture(event.pointerId);
+    moveTo(event.clientY);
+    // カードに重ねたリンクへ渡さない。掴んだつもりでページが開いてしまう。
+    event.preventDefault();
+  });
+
+  bar.addEventListener('pointermove', (event) => {
+    if (bar.hasPointerCapture(event.pointerId)) moveTo(event.clientY);
+  });
+
+  bar.addEventListener('pointerup', (event) => {
+    bar.releasePointerCapture(event.pointerId);
+  });
 }
 
 /**
@@ -410,20 +488,29 @@ function appendChapters(box) {
 function renderChapters(card, chapters) {
   const box = card.querySelector('.chapters');
   if (!box) return;
+  const wrap = box.parentElement;
+
   box.textContent = '';
   box.scrollTop = 0;
   chapterRest.delete(box);
-  if (!Array.isArray(chapters) || chapters.length === 0) return;
+  if (!Array.isArray(chapters) || chapters.length === 0) {
+    // 話数が無いカードでは棒も出さない。包みごと消す。
+    wrap.hidden = true;
+    return;
+  }
 
+  wrap.hidden = false;
   chapterRest.set(box, { list: chapters, at: 0 });
   appendChapters(box);
 
   // 箱は使い回されるので、聞き役は 1 つで足りる。中身は WeakMap から引く。
   if (box.dataset.moreBound !== 'true') {
     box.dataset.moreBound = 'true';
+    bindChapterBar(box);
     box.addEventListener('scroll', () => {
       const left = box.scrollHeight - box.scrollTop - box.clientHeight;
       if (left <= CHAPTER_REACH_PX) appendChapters(box);
+      syncChapterBar(box);
     });
   }
 }
@@ -648,7 +735,7 @@ function createFolderCard(node, childCount) {
   card.querySelector('.thumb-img').remove();
   card.querySelector('.thumb-state').remove();
   card.querySelector('.order-badge').remove();
-  card.querySelector('.chapters').remove();
+  card.querySelector('.chapters-wrap').remove();
   // 出せる操作が無いので、ボタン自体を置かない
   card.querySelector('.menu-button').remove();
 
