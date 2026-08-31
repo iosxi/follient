@@ -361,25 +361,70 @@ function retryRounds() {
 }
 
 /**
+ * 一度に置く話数。残りは箱を下へ送ったときに継ぎ足す。
+ *
+ * 全話を最初から <a> にしてはいけない。カードは画面に入ると二度と消えない
+ * ので、500 件のフォルダを一巡すると置いた <a> がそのまま積み上がる。
+ * 1 作 300 話なら 15 万本になり、:visited はその 1 本ずつが履歴への
+ * 問い合わせになる。見えているのは 3 行だけなのだから、その場で要るぶんだけ
+ * 置けばよい。
+ */
+const CHAPTER_CHUNK = 24;
+
+/** 箱の底から何 px 手前で継ぎ足すか。行の高さ 3 つ分ほど。 */
+const CHAPTER_REACH_PX = 60;
+
+/** 箱ごとの「まだ置いていない話数」。作り直すたびに置き換わる。 */
+const chapterRest = new WeakMap();
+
+/** 続きを 1 かたまり分だけ置く。もう無ければ何もしない。 */
+function appendChapters(box) {
+  const rest = chapterRest.get(box);
+  if (!rest || rest.at >= rest.list.length) return;
+
+  const until = Math.min(rest.at + CHAPTER_CHUNK, rest.list.length);
+  const batch = document.createDocumentFragment();
+  for (let i = rest.at; i < until; i += 1) {
+    const chapter = rest.list[i];
+    const link = document.createElement('a');
+    link.href = chapter.url;
+    link.textContent = chapter.label;
+    link.title = chapter.url;
+    batch.appendChild(link);
+  }
+  rest.at = until;
+  box.appendChild(batch);
+}
+
+/**
  * 話数を並べる (rawkuma 専用)。
  *
  * どこまで読んだかは、本物の <a> を置いて CSS の :visited に任せる。
  * 訪問済みかどうかは JavaScript から読めない (履歴詐取の対策で塞がれて
  * いる) ので、follient 自身は既読の数も日付も知らない。色が変わるのを
  * 利用者が見るだけ、というのがこの仕組みの限界。
+ *
+ * 新しい話が上に来る。箱は 3 行分しか高さが無いので (CSS)、最新の 3 話は
+ * 送らずに見え、それより前は箱の中を下へ送って辿る。
  */
 function renderChapters(card, chapters) {
   const box = card.querySelector('.chapters');
   if (!box) return;
   box.textContent = '';
+  box.scrollTop = 0;
+  chapterRest.delete(box);
   if (!Array.isArray(chapters) || chapters.length === 0) return;
 
-  for (const chapter of chapters) {
-    const link = document.createElement('a');
-    link.href = chapter.url;
-    link.textContent = chapter.label;
-    link.title = chapter.url;
-    box.appendChild(link);
+  chapterRest.set(box, { list: chapters, at: 0 });
+  appendChapters(box);
+
+  // 箱は使い回されるので、聞き役は 1 つで足りる。中身は WeakMap から引く。
+  if (box.dataset.moreBound !== 'true') {
+    box.dataset.moreBound = 'true';
+    box.addEventListener('scroll', () => {
+      const left = box.scrollHeight - box.scrollTop - box.clientHeight;
+      if (left <= CHAPTER_REACH_PX) appendChapters(box);
+    });
   }
 }
 

@@ -8,6 +8,10 @@
   --shadow: 0 1px 2px rgba(0, 0, 0, 0.05), 0 8px 24px rgba(0, 0, 0, 0.06);
   --shadow-hover: 0 2px 4px rgba(0, 0, 0, 0.06), 0 16px 40px rgba(0, 0, 0, 0.12);
 
+  /* 送り箱のつまみと溝。--border では薄すぎて、あるのに見えなかった */
+  --scroll-thumb: rgba(0, 0, 0, 0.32);
+  --scroll-track: rgba(0, 0, 0, 0.07);
+
   --gap: 18px;
   --row: 4px; /* masonry の行単位。JS が span を計算する */
   --radius: 14px;
@@ -23,6 +27,8 @@
     --accent: #8a97ff;
     --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 24px rgba(0, 0, 0, 0.3);
     --shadow-hover: 0 2px 4px rgba(0, 0, 0, 0.5), 0 16px 40px rgba(0, 0, 0, 0.45);
+    --scroll-thumb: rgba(255, 255, 255, 0.34);
+    --scroll-track: rgba(255, 255, 255, 0.08);
   }
 }
 
@@ -439,12 +445,35 @@ main {
 
 /* 重ねたカードのリンクより上に出す。でないと自分が押せない。 */
 .chapters {
+  /* a の見た目の高さ。font-size 11.5px x line-height 1.6 + 上下の padding */
+  --chapter-row: calc(11.5px * 1.6 + 2px);
+  --chapter-gap: 2px;
+
   position: relative;
   z-index: 2;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--chapter-gap);
   margin: 1px 0 2px;
+
+  /*
+   * 何話あっても 3 行だけ見せ、残りは箱の中で送る。全話を並べてもカードの
+   * 丈は変わらないので、masonry の貼り直しも起きない。3 話に満たない作品は
+   * max-height なので縮む。空の行は出ない。
+   */
+  max-height: calc(var(--chapter-row) * 3 + var(--chapter-gap) * 2);
+  overflow-y: auto;
+
+  /*
+   * つまみは出しっぱなしにする。Firefox は既定では重ね置きの細い棒で、
+   * 触っている間しか出てこない。送り箱だと気づけないので、色を明示して
+   * 場所を取る昔ながらの棒にする (scrollbar-color を auto 以外にすると
+   * そうなる)。溝の幅は 3 話に満たない箱でも先に空けておき、話数が増えても
+   * 文字の右端が動かないようにする。
+   */
+  scrollbar-width: thin;
+  scrollbar-color: var(--scroll-thumb) var(--scroll-track);
+  scrollbar-gutter: stable;
 }
 
 .chapters:empty {
@@ -465,6 +494,8 @@ main {
  */
 .chapters a {
   display: block;
+  /* 縦に並べた flex の中身は、丈を絞ると潰れにいく。行の高さを守らせる */
+  flex: none;
   padding: 1px 8px;
   border-radius: 5px;
   background-color: var(--surface);
