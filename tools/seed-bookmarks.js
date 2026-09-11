@@ -72,6 +72,26 @@
       ],
     },
     {
+      /*
+       * 並べ替え (sortByUpdated) を確かめるためのフォルダ。
+       *
+       * わざとアルファベット順に登録してある。ブックマークの順のままなら
+       * この順に出るが、更新が新しい順に並べば順序が入れ替わる。正解は
+       * https://rawkuma.net/latest-update/ の並びそのもの。
+       */
+      title: 'RAWKUMA - 並べ替え',
+      children: [
+        { title: 'Gaishuu Isshoku', url: 'https://rawkuma.net/manga/gaishuu-isshoku/' },
+        { title: 'Gekkou Kamen', url: 'https://rawkuma.net/manga/gekkou-kamen/' },
+        { title: 'Kanreki Hime', url: 'https://rawkuma.net/manga/kanreki-hime/' },
+        { title: 'Kaze to Kumo', url: 'https://rawkuma.net/manga/kaze-to-kumo/' },
+        { title: 'Saint Seiya Tenkai Hen', url: 'https://rawkuma.net/manga/saint-seiya-tenkai-hen/' },
+        { title: 'Sakuhana Soldiers', url: 'https://rawkuma.net/manga/sakuhana-soldiers/' },
+        { title: 'Samurai 8', url: 'https://rawkuma.net/manga/samurai-8-hachimaruden/' },
+        { title: 'Saotome Girl', url: 'https://rawkuma.net/manga/saotome-girl-hitakakusu/' },
+      ],
+    },
+    {
       // OGP 画像を持たないページばかりのフォルダ。スクリーンショット代替と、
       // 同一ホストが並んだときの間隔制御を確かめるためのもの。
       title: 'OGPなし',

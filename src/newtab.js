@@ -21,7 +21,18 @@ follientLoadSettings().then((loaded) => {
 });
 browser.storage.onChanged.addListener((changes, area) => {
   if (area === 'local' && changes.settings) {
+    const before = settings.sortByUpdated;
     settings = Object.assign({}, FOLLIENT_DEFAULTS, changes.settings.newValue || {});
+    // 並び順の設定は、設定画面で切り替えたその場で効いてほしい。
+    // 切りに戻したときは order を外すだけなので、これも applySort が行う。
+    if (before !== settings.sortByUpdated) {
+      if (settings.sortByUpdated) {
+        render();
+      } else {
+        applySort();
+        updateSortStatus();
+      }
+    }
   }
 });
 
@@ -294,6 +305,9 @@ async function hydrateCard(card, force) {
   // 設定で切ったら、その場で消えてほしい。キャッシュに残っている話数を
   // 出さないよう、ここでも見る。
   renderChapters(card, settings.showChapters ? data && data.chapters : null);
+
+  // 取得のついでに更新日時も返ってくる。並べ替えが入りなら反映する。
+  if (settings.sortByUpdated && setUpdatedAt(card, data && data.updatedAt)) requestSort();
 
   // 相手がはっきり 4xx / 5xx を返したときだけ、手元の絵より状態を優先する。
   // 消えたブックマークだと分かるほうが、昔の絵が出続けるより役に立つため。
@@ -704,6 +718,214 @@ window.addEventListener('scroll', closeMenu, true);
 window.addEventListener('resize', closeMenu);
 
 /* ------------------------------------------------------------------ *
+ * 更新が新しい順に並べる (sortByUpdated)
+ *
+ * 並べ替えは DOM を組み替えずに CSS の order でやる。カードを差し替えると
+ * 取得済みの絵も話数の送り位置も失われ、取り直しが起きるため。grid の
+ * 自動配置は order の順に置くので、これだけで並びが変わる。
+ *
+ * 日時はページが名乗っているものを背景が読む。rawkuma の作品ページなら
+ * 最新話の <time datetime> で、/latest-update/ の並びはこの降順そのもの
+ * だった (実測)。
+ * ------------------------------------------------------------------ */
+
+const sortStatus = document.getElementById('sort-status');
+
+/** 並べ替えを反映してよい位置。ここより下にいるときは触らない。 */
+const SORT_TOP_PX = 120;
+
+/** 日時が届くたびに並べ替えず、少し待ってまとめて反映する。 */
+const SORT_SETTLE_MS = 400;
+
+/** ニュータブ側で同時に投げる「日時だけ」の問い合わせ数。 */
+const SWEEP_WORKERS = 3;
+
+let sortTimer = 0;
+/** 反映を待たせている並べ替えがあるか (利用者が下を見ている間)。 */
+let sortPending = false;
+/** まだ日時の分かっていないカードの数。 */
+let sweepLeft = 0;
+
+/** 保存済みの日時をまとめて聞く。網には出ない。 */
+function requestCachedDates(urls) {
+  if (!urls.length) return Promise.resolve({});
+  return browser.runtime
+    .sendMessage({ type: 'follient:updated-cached', urls })
+    .then((map) => map || {})
+    .catch(() => ({}));
+}
+
+/** 1 ページぶんの日時を聞く。無ければ背景が取りにいく。 */
+function requestUpdated(url) {
+  return browser.runtime
+    .sendMessage({ type: 'follient:updated', url })
+    .catch(() => null);
+}
+
+/**
+ * 並べ替えを実際に当てる。
+ *
+ * フォルダは日時を持たないので、並べ替えが入りでも先頭に固めて元の順のまま
+ * 置く。日時の分からないブックマークは末尾へ回し、その中では元の順を保つ。
+ * 「分からない」を古い日付とみなして混ぜると、並びの意味が濁るため。
+ */
+function applySort() {
+  const cards = Array.prototype.slice.call(grid.children);
+  if (!settings.sortByUpdated) {
+    for (const card of cards) card.style.order = '';
+    return;
+  }
+
+  const ranked = cards.map((card, index) => ({
+    card,
+    index,
+    folder: card.dataset.kind === 'folder',
+    at: Number(card.dataset.updatedAt || 0),
+  }));
+
+  ranked.sort((a, b) => {
+    if (a.folder !== b.folder) return a.folder ? -1 : 1;
+    if (!a.folder && a.at !== b.at) return b.at - a.at;
+    return a.index - b.index;
+  });
+
+  ranked.forEach((entry, rank) => {
+    entry.card.style.order = String(rank);
+  });
+}
+
+/** 今どういう状態かを上の帯に出す。何も起きていなければ隠す。 */
+function updateSortStatus() {
+  if (!sortStatus) return;
+  if (!settings.sortByUpdated) {
+    sortStatus.hidden = true;
+    return;
+  }
+  if (sweepLeft > 0) {
+    sortStatus.textContent = '更新日時を調べています… 残り ' + sweepLeft + ' 件';
+    sortStatus.hidden = false;
+    return;
+  }
+  if (sortPending) {
+    sortStatus.textContent = '並べ替えを保留中 — 一番上に戻すと反映します';
+    sortStatus.hidden = false;
+    return;
+  }
+  sortStatus.hidden = true;
+}
+
+/**
+ * 並べ替えを頼む。すぐには当てない。
+ *
+ * 読んでいる最中に足元のカードが動くのがいちばん困る。画面が一番上に
+ * ある間だけ当て、下を見ているときは保留して、上に戻ったときに当てる。
+ */
+function requestSort() {
+  if (!settings.sortByUpdated) return;
+  clearTimeout(sortTimer);
+  sortTimer = setTimeout(() => {
+    if (window.scrollY > SORT_TOP_PX) {
+      sortPending = true;
+      updateSortStatus();
+      return;
+    }
+    sortPending = false;
+    applySort();
+    updateSortStatus();
+  }, SORT_SETTLE_MS);
+}
+
+window.addEventListener(
+  'scroll',
+  () => {
+    if (sortPending && window.scrollY <= SORT_TOP_PX) requestSort();
+  },
+  { passive: true }
+);
+
+/** 経過時間の言い方。カードに小さく出して、並びの根拠を見えるようにする。 */
+function relativeTime(ms) {
+  const diff = Date.now() - ms;
+  if (diff < 0) return 'たった今';
+  const minutes = Math.floor(diff / 60000);
+  if (minutes < 1) return 'たった今';
+  if (minutes < 60) return minutes + '分前';
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return hours + '時間前';
+  const days = Math.floor(hours / 24);
+  if (days < 31) return days + '日前';
+  const months = Math.floor(days / 30);
+  if (months < 12) return months + 'か月前';
+  return Math.floor(days / 365) + '年前';
+}
+
+/** ホスト名の行に更新日時を添える。日時が無いときは元のホスト名だけ。 */
+function renderUpdated(card) {
+  const host = card.querySelector('.host');
+  if (!host) return;
+  const name = card.dataset.host || '';
+  const at = Number(card.dataset.updatedAt || 0);
+
+  if (!settings.sortByUpdated || !at) {
+    host.textContent = name;
+    host.removeAttribute('title');
+    return;
+  }
+  host.textContent = name ? name + ' · ' + relativeTime(at) : relativeTime(at);
+  host.title = new Date(at).toLocaleString();
+}
+
+/** カードに日時を持たせる。変わったときだけ並べ替えを頼む。 */
+function setUpdatedAt(card, at) {
+  const next = at ? String(at) : '';
+  if ((card.dataset.updatedAt || '') === next) return false;
+  if (next) {
+    card.dataset.updatedAt = next;
+  } else {
+    delete card.dataset.updatedAt;
+  }
+  renderUpdated(card);
+  return true;
+}
+
+/**
+ * まだ日時の分からないカードを、順に埋めていく。
+ *
+ * 画面に入ったカードの取得 (hydrateCard) と同じ道を通るので、二度取りには
+ * ならない。背景が同じ URL の取得を 1 本にまとめ、結果を保存するため。
+ * 同時に投げる数を絞ってあるのは、見えているカードの取得を待たせないため。
+ */
+async function sweepDates(cards, myGeneration) {
+  const queue = cards.filter((card) => card.dataset.url && !card.dataset.updatedAt);
+  sweepLeft = queue.length;
+  updateSortStatus();
+  if (sweepLeft === 0) return;
+
+  let next = 0;
+  const worker = async () => {
+    while (next < queue.length) {
+      const card = queue[next];
+      next += 1;
+      const result = await requestUpdated(card.dataset.url);
+      if (myGeneration !== generation) return;
+      if (card.isConnected && result && result.at) {
+        if (setUpdatedAt(card, result.at)) requestSort();
+      }
+      sweepLeft -= 1;
+      updateSortStatus();
+    }
+  };
+
+  const workers = [];
+  for (let i = 0; i < Math.min(SWEEP_WORKERS, queue.length); i += 1) workers.push(worker());
+  await Promise.all(workers);
+  if (myGeneration !== generation) return;
+  sweepLeft = 0;
+  updateSortStatus();
+  requestSort();
+}
+
+/* ------------------------------------------------------------------ *
  * カード生成
  * ------------------------------------------------------------------ */
 
@@ -753,8 +975,10 @@ function createFolderCard(node, childCount) {
  * @param {number} order このフォルダで何番目のブックマークか (1 始まり)。
  *   フォルダは数に入れない。並べ替えたときに追える番号が欲しいだけなので、
  *   ブックマークだけを通しで数える。
+ * @param {number} [updatedAt] 保存してあった更新日時。開いた瞬間から
+ *   「新しい順」に並べるために使う。
  */
-function createBookmarkCard(node, order) {
+function createBookmarkCard(node, order, updatedAt) {
   const card = createCardShell(node);
   card.dataset.kind = 'bookmark';
   card.dataset.url = node.url;
@@ -776,6 +1000,11 @@ function createBookmarkCard(node, order) {
   card.querySelector('.link-label').textContent = label;
   card.querySelector('.host').textContent = host;
   card.title = (node.title || node.url) + '\n' + node.url;
+
+  if (updatedAt) {
+    card.dataset.updatedAt = String(updatedAt);
+    renderUpdated(card);
+  }
 
   return card;
 }
@@ -865,6 +1094,13 @@ async function render() {
   grid.textContent = '';
   emptyMessage.hidden = true;
 
+  // 前のフォルダの並べ替えは、ここで打ち切る。走っている sweepDates は
+  // 世代が変わったことに気づいて自分から降りる。
+  clearTimeout(sortTimer);
+  sortPending = false;
+  sweepLeft = 0;
+  updateSortStatus();
+
   const treeRoot = (await browser.bookmarks.getTree())[0];
   const rootId = treeRoot.id;
   const folderId = folderIdFromHash() || rootId;
@@ -909,6 +1145,16 @@ async function render() {
   );
   if (myGeneration !== generation) return;
 
+  /*
+   * 「新しい順」のときは、保存してある日時を先に聞いておく。storage を
+   * 1 回読むだけで網には出ないので、開いた瞬間から前回の並びで出せる。
+   * 知らないぶんは後から sweepDates が埋め、届いた順にまとめて並べ直す。
+   */
+  const knownDates = settings.sortByUpdated
+    ? await requestCachedDates(visibleNodes.filter((node) => node.url).map((node) => node.url))
+    : {};
+  if (myGeneration !== generation) return;
+
   const fragment = document.createDocumentFragment();
   const cards = [];
   let order = 0;
@@ -916,7 +1162,7 @@ async function render() {
   visibleNodes.forEach((node, index) => {
     if (node.url) order += 1;
     const card = node.url
-      ? createBookmarkCard(node, order)
+      ? createBookmarkCard(node, order, knownDates[node.url])
       : createFolderCard(node, counts[index]);
     card.style.animationDelay = Math.min(index, 24) * 18 + 'ms';
     fragment.appendChild(card);
@@ -924,12 +1170,15 @@ async function render() {
   });
 
   grid.appendChild(fragment);
+  applySort();
 
   for (const card of cards) {
     layoutCard(card);
     cardResizeObserver.observe(card);
     if (card.dataset.url) viewportObserver.observe(card);
   }
+
+  if (settings.sortByUpdated) sweepDates(cards, myGeneration);
 }
 
 /* ------------------------------------------------------------------ *

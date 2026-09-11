@@ -136,6 +136,26 @@ body {
   white-space: nowrap;
 }
 
+/*
+ * 並べ替えの途中経過。
+ *
+ * パンくずの右端に寄せる。中身が入っていない間は hidden なので場所も
+ * 取らない。帯の丈が伸び縮みするとカードまで動くので、文字は 1 行に保つ。
+ */
+.sort-status {
+  margin: 0 0 0 auto;
+  font-size: 12px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 40%;
+}
+
+.sort-status[hidden] {
+  display: none;
+}
+
 /* ---------- Pinterest 風タイル ---------- */
 
 main {
