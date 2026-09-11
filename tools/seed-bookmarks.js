@@ -92,6 +92,26 @@
       ],
     },
     {
+      /*
+       * rawkuma と他のサイトが混ざったフォルダ。
+       *
+       * 1 つおきに並べてある。正しく動けば、動くのは rawkuma の 4 枚だけで、
+       * しかも 2・4・6・8 番目という**元の場所の中で**入れ替わる。
+       * GitHub / MDN / Rust / Node.js は 1・3・5・7 番目のまま動かない。
+       */
+      title: 'RAWKUMA - 混在',
+      children: [
+        { title: 'GitHub', url: 'https://github.com/' },
+        { title: 'Gaishuu Isshoku', url: 'https://rawkuma.net/manga/gaishuu-isshoku/' },
+        { title: 'MDN Web Docs', url: 'https://developer.mozilla.org/ja/' },
+        { title: 'Gekkou Kamen', url: 'https://rawkuma.net/manga/gekkou-kamen/' },
+        { title: 'Rust', url: 'https://www.rust-lang.org/ja' },
+        { title: 'Kanreki Hime', url: 'https://rawkuma.net/manga/kanreki-hime/' },
+        { title: 'Node.js', url: 'https://nodejs.org/ja' },
+        { title: 'Kaze to Kumo', url: 'https://rawkuma.net/manga/kaze-to-kumo/' },
+      ],
+    },
+    {
       // OGP 画像を持たないページばかりのフォルダ。スクリーンショット代替と、
       // 同一ホストが並んだときの間隔制御を確かめるためのもの。
       title: 'OGPなし',

@@ -17,8 +17,12 @@
    * これが無いと、改善しても古い結果を見続けてしまう。実際 512KB 上限だった
    * 頃に「画像なし」と判定された YouTube が、上限を 2MB にした後も 7 日間
    * 頭文字タイルのままだった。版が違うキャッシュは捨てて取り直す。
+   *
+   * v9 で上げたのは、v24 が**よそのサイトにも付けてしまった updatedAt** を
+   * 捨てるため。残しておくと、並べ替えが入りの間ずっと、関係のないページを
+   * 1 日に 1 度読み直し続ける。
    */
-  const EXTRACT_VERSION = 8;
+  const EXTRACT_VERSION = 9;
 
   /** 画像が取れた結果の寿命。 */
   const CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
@@ -39,14 +43,6 @@
    */
   const CHAPTER_TTL_MS = 24 * 60 * 60 * 1000;
 
-  /**
-   * 更新日時だけの寿命。話数と同じ理由で 24 時間。
-   *
-   * 「新しい順」に並べているときは、日時が古いままだと並びそのものが
-   * 嘘になる。日時が分かっているページだけを対象にする。分からなかった
-   * ページを毎日読み直しても、どのみち最後に回るので何も変わらない。
-   */
-  const UPDATED_TTL_MS = 24 * 60 * 60 * 1000;
   const FETCH_TIMEOUT_MS = 8000;
   /**
    * 1 ページから読む上限。
@@ -110,16 +106,18 @@
     const ttl = entry.data && entry.data.image ? CACHE_TTL_MS : CACHE_TTL_EMPTY_MS;
     if (Date.now() - entry.at > ttl) return null;
 
-    // 絵はまだ使えるが話数が古い、という場合は取り直す。話数を出さない
-    // ページ (chapters が null) はここに掛からないので、巻き添えにならない。
-    if (settings.showChapters && entry.data && entry.data.chapters) {
-      const at = entry.data.chaptersAt || entry.at;
+    /*
+     * 絵はまだ使えるが、話数や更新日時が古い、という場合は取り直す。
+     *
+     * どちらも rawkuma のページにしか無い (updatedAt は他所では常に null)。
+     * よその何百件を毎日読み直すことにはならない。
+     */
+    const wantsFresh =
+      (settings.showChapters && entry.data && entry.data.chapters) ||
+      (settings.sortByUpdated && entry.data && entry.data.updatedAt);
+    if (wantsFresh) {
+      const at = (entry.data && entry.data.chaptersAt) || entry.at;
       if (Date.now() - at > CHAPTER_TTL_MS) return null;
-    }
-
-    // 並べ替えに使っている日時も、同じ理由で古いままにしない。
-    if (settings.sortByUpdated && entry.data && entry.data.updatedAt) {
-      if (Date.now() - entry.at > UPDATED_TTL_MS) return null;
     }
     return entry.data;
   }
@@ -485,27 +483,16 @@
     return sized.concat(unsized).slice(0, limit);
   }
 
-  /**
-   * ページが名乗っている RSS / Atom フィードを、書いてある順に返す。
-   *
-   * コメント欄のフィードかどうかを見分けて持たせる。WordPress は記事ごとに
-   * 「<題名> Comments Feed」を名乗り、rawkuma.net の作品ページが名乗るのも
-   * これ 1 本だけ。更新日時をここから採ると「最後にコメントが付いた時刻」に
-   * なってしまうので、日時には使わない。画像は今までどおり書いてある順に
-   * 見る (コメントのフィードしか無いページの動きを変えないため)。
-   */
-  function findFeedLinks(doc, baseUrl) {
-    const found = [];
+  /** ページが名乗っている RSS / Atom フィードの場所。 */
+  function findFeedUrl(doc, baseUrl) {
     const links = doc.querySelectorAll('link[rel~="alternate"][href]');
     for (const link of links) {
       const type = (link.getAttribute('type') || '').toLowerCase();
-      if (type.indexOf('rss') === -1 && type.indexOf('atom') === -1) continue;
-      const url = absolutize(link.getAttribute('href'), baseUrl);
-      if (!url) continue;
-      const title = link.getAttribute('title') || '';
-      found.push({ url, comments: /comments?\s*feed/i.test(title) || /\/comments\/feed/i.test(url) });
+      if (type.indexOf('rss') !== -1 || type.indexOf('atom') !== -1) {
+        return absolutize(link.getAttribute('href'), baseUrl);
+      }
     }
-    return found;
+    return null;
   }
 
   /**
@@ -576,11 +563,16 @@
     };
   }
   /* ------------------------------------------------------------------ *
-   * 更新日時
+   * 更新日時 (rawkuma 専用)
    *
-   * カードを「新しい順」に並べるための鍵。ページが名乗っているものを読む
-   * だけで、こちらから日付を作り出すことはしない。分からなければ null を
-   * 返し、ニュータブ側はそういうカードを最後に回す。
+   * カードを「新しい順」に並べるための鍵。話数の表示と同じく rawkuma.net
+   * のページにしか付けない。よそのブックマークには null のままにして、
+   * 並びも通信も v23 までと変わらないようにする。
+   *
+   * v24 では og:updated_time や JSON-LD からどのサイトの日時も拾って
+   * いたが、それだと**別のフォルダまで並びが変わってしまう**という
+   * 報告が出た。日時の在り処を広げるのではなく、対象を rawkuma に
+   * 絞るのが正しかった。
    * ------------------------------------------------------------------ */
 
   /** これより古い・これより先の日付は、名乗っていても採らない。 */
@@ -590,9 +582,9 @@
   /**
    * 日付として使える文字列だけを ms に直す。
    *
-   * Date.parse は緩すぎる。rawkuma の JSON-LD は datePublished に "1958" と
-   * いう年だけの値を入れており、これを通すと 1958-01-01 という嘘の日付が
-   * できてしまう。年月日が揃っているもの (ISO 風) と、RFC 822 風
+   * Date.parse は緩すぎる。年だけの "1958" のような値も通してしまい、
+   * 1958-01-01 という嘘の日付ができる (rawkuma の JSON-LD が実際にそう
+   * 書いている)。年月日が揃っているもの (ISO 風) と、RFC 822 風
    * ("Thu, 11 Sep 2026 11:14:40 +0000") だけを受ける。
    *
    * 予定投稿で未来の日付を名乗るページがあるので、明後日より先も捨てる。
@@ -614,82 +606,11 @@
   }
 
   /**
-   * 更新日時を名乗る meta の書き方。上ほど信用する。
-   *
-   * 「更新した日」が先で「公開した日」が後。両方あるなら更新のほうが
-   * 「最後に何かあった日」に近い。
-   */
-  const UPDATED_META = [
-    'meta[property="og:updated_time"]',
-    'meta[name="og:updated_time"]',
-    'meta[property="article:modified_time"]',
-    'meta[property="og:article:modified_time"]',
-    'meta[name="article:modified_time"]',
-    'meta[itemprop="dateModified"]',
-    'meta[name="last-modified"]',
-    'meta[http-equiv="last-modified"]',
-    'meta[name="revised"]',
-    'meta[property="article:published_time"]',
-    'meta[property="og:published_time"]',
-    'meta[itemprop="datePublished"]',
-    'meta[name="date"]',
-    'meta[name="pubdate"]',
-    'meta[name="DC.date.modified"]',
-    'meta[name="DC.date"]',
-  ];
-
-  function updatedFromMeta(doc) {
-    for (const selector of UPDATED_META) {
-      const el = doc.querySelector(selector);
-      if (!el) continue;
-      const ms = parseDate(el.getAttribute('content'));
-      if (ms) return ms;
-    }
-    return null;
-  }
-
-  /** JSON-LD をたどって dateModified / datePublished を探す。 */
-  function pickJsonLdDate(value, depth) {
-    if (!value || depth > 4 || typeof value !== 'object') return null;
-    if (Array.isArray(value)) {
-      let best = null;
-      for (const item of value) {
-        const found = pickJsonLdDate(item, depth + 1);
-        if (found && (!best || found > best)) best = found;
-      }
-      return best;
-    }
-    const direct = parseDate(value.dateModified) || parseDate(value.datePublished);
-    if (direct) return direct;
-    for (const key of ['@graph', 'mainEntity', 'itemListElement']) {
-      const found = pickJsonLdDate(value[key], depth + 1);
-      if (found) return found;
-    }
-    return null;
-  }
-
-  function updatedFromJsonLd(doc) {
-    const nodes = doc.querySelectorAll('script[type="application/ld+json"]');
-    let best = null;
-    for (const node of nodes) {
-      let data;
-      try {
-        data = JSON.parse(node.textContent);
-      } catch (e) {
-        continue;
-      }
-      const found = pickJsonLdDate(data, 0);
-      if (found && (!best || found > best)) best = found;
-    }
-    return best;
-  }
-
-  /**
    * 本文の <time datetime> のうち、いちばん新しいもの。
    *
-   * 一覧や記事の並ぶページで効く最後の手立て。どれが「このページの日付」か
-   * は分からないので、いちばん新しいものを「最後に何かあった時刻」と見なす。
-   * 未来の日付は parseDate が落とす。
+   * 話数の並ばない rawkuma のページ (/latest-update/ や話数のページ) 用。
+   * どれが「このページの日付」かは分からないので、いちばん新しいものを
+   * 「最後に何かあった時刻」と見なす。未来の日付は parseDate が落とす。
    */
   function updatedFromTimeTags(doc) {
     const nodes = doc.querySelectorAll('time[datetime]');
@@ -700,19 +621,6 @@
       seen += 1;
       const ms = parseDate(node.getAttribute('datetime'));
       if (ms && (!best || ms > best)) best = ms;
-    }
-    return best;
-  }
-
-  /** フィードの項目のうち、いちばん新しいもの。 */
-  function updatedFromFeedDoc(doc) {
-    let best = null;
-    for (const tag of ['pubDate', 'updated', 'published', 'lastBuildDate', 'date']) {
-      const nodes = doc.getElementsByTagNameNS('*', tag);
-      for (const node of nodes) {
-        const ms = parseDate((node.textContent || '').trim());
-        if (ms && (!best || ms > best)) best = ms;
-      }
     }
     return best;
   }
@@ -768,6 +676,21 @@
   const CHAPTER_HOST_RE = /(^|\.)rawkuma\.net$/i;
 
   /**
+   * この URL が rawkuma のものか。
+   *
+   * 話数の表示も更新日時も、この 1 サイトにしか付けない。判定を 1 か所に
+   * まとめておかないと、片方だけよそのサイトに漏れる。v24 では日時の側が
+   * 全サイトに漏れていて、関係のないフォルダまで並びが変わってしまった。
+   */
+  function isChapterHost(url) {
+    try {
+      return CHAPTER_HOST_RE.test(new URL(url).hostname);
+    } catch (e) {
+      return false;
+    }
+  }
+
+  /**
    * 末尾は chapter-<話数>.<記事ID>/ という形。話数には 169.5 のような
    * 小数もある (実データで 6 件あった)。記事 ID は毎回ちがうので、
    * 話数から URL を組み立てることはできない。必ずページから拾う。
@@ -784,13 +707,13 @@
   const MANGA_PATH_RE = /^\/manga\/[^/]+\/?$/i;
 
   function chaptersFromDoc(doc, baseUrl) {
+    if (!isChapterHost(baseUrl)) return null;
     let here;
     try {
       here = new URL(baseUrl);
     } catch (e) {
       return null;
     }
-    if (!CHAPTER_HOST_RE.test(here.hostname)) return null;
     if (!MANGA_PATH_RE.test(here.pathname)) return null;
 
     const byUrl = new Map();
@@ -846,14 +769,10 @@
     return best;
   }
 
-  /**
-   * フィードを 1 本読んで DOM にする。読めなければ null。
-   *
-   * 同じ 1 ページの中で画像と日時の両方に使うことがあるので、呼び出し側で
-   * 一度読んだものを覚えておく (fetchMetadata の feedCache)。同じ URL を
-   * 2 回取りにいかないため。
-   */
-  async function loadFeedDoc(feedUrl, reload) {
+  /** ページが名乗るフィードから画像を 1 枚拾う。無ければ null。 */
+  async function feedImage(doc, baseUrl, reload) {
+    const feedUrl = findFeedUrl(doc, baseUrl);
+    if (!feedUrl) return null;
     try {
       const feed = await fetchText(
         feedUrl,
@@ -863,7 +782,7 @@
       );
       const feedDoc = new DOMParser().parseFromString(feed.text, 'application/xml');
       if (feedDoc.querySelector('parsererror')) return null;
-      return { doc: feedDoc, finalUrl: feed.finalUrl };
+      return imageFromFeedDoc(feedDoc, feed.finalUrl);
     } catch (e) {
       return null; // フィードが無い/壊れていても、ページ本体の情報は返す
     }
@@ -916,20 +835,9 @@
     }
     if (settings.sourceJsonLd) add(imageFromJsonLd(doc), 'json-ld');
 
-    const feeds = findFeedLinks(doc, page.finalUrl);
-    /** 同じフィードを画像と日時で 2 回取りにいかないための覚え書き。 */
-    const feedCache = new Map();
-    const openFeed = async (link) => {
-      if (!feedCache.has(link.url)) {
-        feedCache.set(link.url, await loadFeedDoc(link.url, reload));
-      }
-      return feedCache.get(link.url);
-    };
-
     // 4: フィード。取得が 1 回増えるので、ページが何も名乗っていないときだけ見る
-    if (settings.sourceFeed && images.length === 0 && feeds.length) {
-      const feed = await openFeed(feeds[0]);
-      if (feed) add(imageFromFeedDoc(feed.doc, feed.finalUrl), 'feed');
+    if (settings.sourceFeed && images.length === 0) {
+      add(await feedImage(doc, page.finalUrl, reload), 'feed');
     }
 
     // 5: 本文の img
@@ -953,39 +861,21 @@
     meta.chaptersAt = meta.chapters ? Date.now() : 0;
 
     /*
-     * 更新日時。信用できる順に試し、最初に採れたところで止める。
-     * どこから採ったかも持たせる (不具合を追うときの手掛かり)。
+     * 更新日時。rawkuma のページにだけ付ける。
+     *
+     * 作品ページは話数の <time> から (/latest-update/ の並びはこの降順
+     * そのものだった)。話数の並ばない rawkuma のページは、本文の <time> の
+     * うちいちばん新しいもので代える。よそのサイトは null のまま。
      */
-    let updatedAt = chaptersUpdatedAt(chapters);
-    let updatedSource = updatedAt ? 'chapter' : null;
-
-    if (!updatedAt) {
-      updatedAt = updatedFromMeta(doc);
-      if (updatedAt) updatedSource = 'meta';
-    }
-    if (!updatedAt) {
-      updatedAt = updatedFromJsonLd(doc);
-      if (updatedAt) updatedSource = 'json-ld';
-    }
-    if (!updatedAt) {
-      /*
-       * フィード。すでに画像のために読んでいればただで済むが、読んでいない
-       * 場合は取得が 1 回増えるので、並べ替えが入りのときだけ読みにいく。
-       * コメント欄のフィードは「最後にコメントが付いた時刻」なので使わない。
-       */
-      const link = feeds.find((feed) => !feed.comments);
-      if (link && (settings.sortByUpdated || feedCache.has(link.url))) {
-        const feed = await openFeed(link);
-        const ms = feed ? updatedFromFeedDoc(feed.doc) : null;
-        if (ms) {
-          updatedAt = ms;
-          updatedSource = 'feed';
-        }
+    let updatedAt = null;
+    let updatedSource = null;
+    if (isChapterHost(page.finalUrl)) {
+      updatedAt = chaptersUpdatedAt(chapters);
+      updatedSource = updatedAt ? 'chapter' : null;
+      if (!updatedAt) {
+        updatedAt = updatedFromTimeTags(doc);
+        if (updatedAt) updatedSource = 'time';
       }
-    }
-    if (!updatedAt) {
-      updatedAt = updatedFromTimeTags(doc);
-      if (updatedAt) updatedSource = 'time';
     }
 
     meta.updatedAt = updatedAt || null;
@@ -1085,30 +975,36 @@
   }
 
   /**
-   * 保存してある更新日時だけを、まとめて返す。取りにはいかない。
+   * 並べ替えに要ることを、まとめて返す。取りにはいかない。
    *
-   * ニュータブは最初の一描きでこれを聞く。何百件あっても
+   * 返すのは 2 つ。**どれが並べ替えの対象か** (sortable) と、保存してある
+   * 日時 (dates)。ニュータブは最初の一描きでこれを聞く。何百件あっても
    * storage.local.get 1 回で済み、網にも出ないので、開いた瞬間に
-   * 「前に見たときの順」で並べられる。足りないぶんは後から
+   * 「前に見たときの順」で並べられる。足りない日時は後から
    * follient:updated が埋める。
    *
-   * 期限は見ない。少し古い日時でも、順番の当たりとしては使えるため。
-   * 正しい値は取り直しが済んだ時点で上書きされる。
+   * sortable を先に渡すのが肝心。これが無いと、日時が届くまで「どのカードが
+   * 動きうるか」が決まらず、届くたびに関係のないカードまで場所を変える。
+   * rawkuma 以外はここで落ちるので、よそのフォルダは 1 件も取りにいかない。
+   *
+   * 日時の期限は見ない。少し古くても順番の当たりとしては使えるし、正しい値は
+   * 取り直しが済んだ時点で上書きされる。
    */
   async function readUpdatedCache(urls) {
     const list = Array.isArray(urls) ? urls.filter(isFetchable) : [];
-    if (list.length === 0) return {};
-    const keys = list.map((url) => CACHE_PREFIX + url);
-    const stored = await browser.storage.local.get(keys);
+    const sortable = list.filter(isChapterHost);
+    if (sortable.length === 0) return { sortable: [], dates: {} };
 
-    const out = {};
-    for (const url of list) {
+    const stored = await browser.storage.local.get(sortable.map((url) => CACHE_PREFIX + url));
+
+    const dates = {};
+    for (const url of sortable) {
       const entry = stored[CACHE_PREFIX + url];
       if (!entry || entry.v !== EXTRACT_VERSION) continue;
       const at = entry.data && entry.data.updatedAt;
-      if (at) out[url] = at;
+      if (at) dates[url] = at;
     }
-    return out;
+    return { sortable, dates };
   }
 
   browser.runtime.onMessage.addListener((message) => {
@@ -1117,15 +1013,18 @@
       return getMetadata(message.url, message.force);
     }
     if (message.type === 'follient:updated') {
-      // 日時だけが要る用。取得の道筋は普通の取得と同じ (キャッシュも
-      // まとめ役も共用する) ので、あとでカードが開かれても二度取りにならない。
+      // 対象外のページは、ここで断つ。ニュータブが取り違えて頼んできても
+      // 網には出さない。
+      if (!isChapterHost(message.url)) return Promise.resolve({ at: null });
+      // 取得の道筋は普通の取得と同じ (キャッシュもまとめ役も共用する) ので、
+      // あとでカードが開かれても二度取りにならない。
       return getMetadata(message.url).then((data) => ({
         at: (data && data.updatedAt) || null,
         source: (data && data.updatedSource) || null,
       }));
     }
     if (message.type === 'follient:updated-cached') {
-      return readUpdatedCache(message.urls).catch(() => ({}));
+      return readUpdatedCache(message.urls).catch(() => ({ sortable: [], dates: {} }));
     }
     if (message.type === 'follient:image-ok') {
       return promoteImage(message.url, message.image).catch(() => {});

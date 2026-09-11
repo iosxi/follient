@@ -24,15 +24,9 @@ browser.storage.onChanged.addListener((changes, area) => {
     const before = settings.sortByUpdated;
     settings = Object.assign({}, FOLLIENT_DEFAULTS, changes.settings.newValue || {});
     // 並び順の設定は、設定画面で切り替えたその場で効いてほしい。
-    // 切りに戻したときは order を外すだけなので、これも applySort が行う。
-    if (before !== settings.sortByUpdated) {
-      if (settings.sortByUpdated) {
-        render();
-      } else {
-        applySort();
-        updateSortStatus();
-      }
-    }
+    // 入り切りどちらも描き直す。切ったときは order を外すだけでは足りず、
+    // ホスト名の行に添えた日時も消さねばならないため。
+    if (before !== settings.sortByUpdated) render();
   }
 });
 
@@ -306,8 +300,14 @@ async function hydrateCard(card, force) {
   // 出さないよう、ここでも見る。
   renderChapters(card, settings.showChapters ? data && data.chapters : null);
 
-  // 取得のついでに更新日時も返ってくる。並べ替えが入りなら反映する。
-  if (settings.sortByUpdated && setUpdatedAt(card, data && data.updatedAt)) requestSort();
+  // 取得のついでに更新日時も返ってくる。対象のカードだけ反映する。
+  if (
+    settings.sortByUpdated &&
+    card.dataset.sortable === 'true' &&
+    setUpdatedAt(card, data && data.updatedAt)
+  ) {
+    requestSort();
+  }
 
   // 相手がはっきり 4xx / 5xx を返したときだけ、手元の絵より状態を優先する。
   // 消えたブックマークだと分かるほうが、昔の絵が出続けるより役に立つため。
@@ -718,15 +718,22 @@ window.addEventListener('scroll', closeMenu, true);
 window.addEventListener('resize', closeMenu);
 
 /* ------------------------------------------------------------------ *
- * 更新が新しい順に並べる (sortByUpdated)
+ * rawkuma を新しい順に並べる (sortByUpdated)
+ *
+ * 動かすのは rawkuma のカードだけ。しかも**そのカードたちが元から占めて
+ * いる場所の中だけ**で入れ替える。よそのブックマークは 1 枚も動かない。
+ *
+ * v24 はどのサイトの日時も読んで全体を並べ替えていた。rawkuma のフォルダ
+ * では良かったが、他のフォルダまで並びが変わって使いづらいという報告が
+ * 出た。「新しい順に並ぶと嬉しいのは rawkuma だけ」というのが答えで、
+ * 対象を絞るのが正しかった。
+ *
+ * どれが対象かは背景が決める (isChapterHost)。ニュータブはその答えを
+ * dataset.sortable として持つだけで、サイトの名前は知らない。
  *
  * 並べ替えは DOM を組み替えずに CSS の order でやる。カードを差し替えると
  * 取得済みの絵も話数の送り位置も失われ、取り直しが起きるため。grid の
  * 自動配置は order の順に置くので、これだけで並びが変わる。
- *
- * 日時はページが名乗っているものを背景が読む。rawkuma の作品ページなら
- * 最新話の <time datetime> で、/latest-update/ の並びはこの降順そのもの
- * だった (実測)。
  * ------------------------------------------------------------------ */
 
 const sortStatus = document.getElementById('sort-status');
@@ -746,13 +753,21 @@ let sortPending = false;
 /** まだ日時の分かっていないカードの数。 */
 let sweepLeft = 0;
 
-/** 保存済みの日時をまとめて聞く。網には出ない。 */
-function requestCachedDates(urls) {
-  if (!urls.length) return Promise.resolve({});
+/**
+ * 並べ替えの対象と、保存済みの日時をまとめて聞く。網には出ない。
+ *
+ * 対象 (sortable) を先に受け取るのが肝心。これが無いと、日時が届くまで
+ * 「どのカードが動きうるか」が決まらず、届くたびに関係のないカードまで
+ * 場所を変えてしまう。
+ */
+const NO_SORT_INFO = { sortable: [], dates: {} };
+
+function requestSortInfo(urls) {
+  if (!urls.length) return Promise.resolve(NO_SORT_INFO);
   return browser.runtime
     .sendMessage({ type: 'follient:updated-cached', urls })
-    .then((map) => map || {})
-    .catch(() => ({}));
+    .then((info) => (info && Array.isArray(info.sortable) ? info : NO_SORT_INFO))
+    .catch(() => NO_SORT_INFO);
 }
 
 /** 1 ページぶんの日時を聞く。無ければ背景が取りにいく。 */
@@ -765,9 +780,13 @@ function requestUpdated(url) {
 /**
  * 並べ替えを実際に当てる。
  *
- * フォルダは日時を持たないので、並べ替えが入りでも先頭に固めて元の順のまま
- * 置く。日時の分からないブックマークは末尾へ回し、その中では元の順を保つ。
- * 「分からない」を古い日付とみなして混ぜると、並びの意味が濁るため。
+ * **場所は増えも減りもしない。** 対象のカードが元から占めている場所を
+ * そのまま使い、その中で中身だけを入れ替える。だからフォルダも、よその
+ * ブックマークも、1 枚も動かない。混ざったフォルダでも、動くのは
+ * rawkuma のカードだけになる。
+ *
+ * 日時の分からない対象は、対象の中の末尾へ回す。「分からない」を古い
+ * 日付とみなして混ぜると、並びの意味が濁るため。
  */
 function applySort() {
   const cards = Array.prototype.slice.call(grid.children);
@@ -776,21 +795,21 @@ function applySort() {
     return;
   }
 
-  const ranked = cards.map((card, index) => ({
-    card,
-    index,
-    folder: card.dataset.kind === 'folder',
-    at: Number(card.dataset.updatedAt || 0),
-  }));
-
-  ranked.sort((a, b) => {
-    if (a.folder !== b.folder) return a.folder ? -1 : 1;
-    if (!a.folder && a.at !== b.at) return b.at - a.at;
-    return a.index - b.index;
+  const movable = [];
+  cards.forEach((card, index) => {
+    // まず全員を元の場所に固定する。これをしないと、対象だけ order を
+    // 持ち、持たないカードが既定値 0 のまま先頭へ寄ってしまう。
+    card.style.order = String(index);
+    if (card.dataset.sortable === 'true') {
+      movable.push({ card, index, at: Number(card.dataset.updatedAt || 0) });
+    }
   });
+  if (movable.length < 2) return;
 
-  ranked.forEach((entry, rank) => {
-    entry.card.style.order = String(rank);
+  const slots = movable.map((entry) => entry.index);
+  movable.sort((a, b) => (a.at !== b.at ? b.at - a.at : a.index - b.index));
+  movable.forEach((entry, rank) => {
+    entry.card.style.order = String(slots[rank]);
   });
 }
 
@@ -859,7 +878,10 @@ function relativeTime(ms) {
   return Math.floor(days / 365) + '年前';
 }
 
-/** ホスト名の行に更新日時を添える。日時が無いときは元のホスト名だけ。 */
+/**
+ * ホスト名の行に更新日時を添える。日時が無いときは元のホスト名だけ。
+ * 並べ替えの根拠を見えるようにするためのもので、対象のカードにしか出ない。
+ */
 function renderUpdated(card) {
   const host = card.querySelector('.host');
   if (!host) return;
@@ -891,12 +913,17 @@ function setUpdatedAt(card, at) {
 /**
  * まだ日時の分からないカードを、順に埋めていく。
  *
+ * **対象のカードしか見ない。** よそのブックマークしか無いフォルダでは
+ * queue が空になり、1 件も取りにいかない (v23 までと通信量が変わらない)。
+ *
  * 画面に入ったカードの取得 (hydrateCard) と同じ道を通るので、二度取りには
  * ならない。背景が同じ URL の取得を 1 本にまとめ、結果を保存するため。
  * 同時に投げる数を絞ってあるのは、見えているカードの取得を待たせないため。
  */
 async function sweepDates(cards, myGeneration) {
-  const queue = cards.filter((card) => card.dataset.url && !card.dataset.updatedAt);
+  const queue = cards.filter(
+    (card) => card.dataset.sortable === 'true' && !card.dataset.updatedAt
+  );
   sweepLeft = queue.length;
   updateSortStatus();
   if (sweepLeft === 0) return;
@@ -975,10 +1002,11 @@ function createFolderCard(node, childCount) {
  * @param {number} order このフォルダで何番目のブックマークか (1 始まり)。
  *   フォルダは数に入れない。並べ替えたときに追える番号が欲しいだけなので、
  *   ブックマークだけを通しで数える。
- * @param {number} [updatedAt] 保存してあった更新日時。開いた瞬間から
- *   「新しい順」に並べるために使う。
+ * @param {object} [sort] 並べ替えのための下ごしらえ。`sortable` が真の
+ *   カードだけが動きうる。`updatedAt` は保存してあった日時で、あれば
+ *   開いた瞬間から「新しい順」に並べられる。
  */
-function createBookmarkCard(node, order, updatedAt) {
+function createBookmarkCard(node, order, sort) {
   const card = createCardShell(node);
   card.dataset.kind = 'bookmark';
   card.dataset.url = node.url;
@@ -1001,9 +1029,12 @@ function createBookmarkCard(node, order, updatedAt) {
   card.querySelector('.host').textContent = host;
   card.title = (node.title || node.url) + '\n' + node.url;
 
-  if (updatedAt) {
-    card.dataset.updatedAt = String(updatedAt);
-    renderUpdated(card);
+  if (sort && sort.sortable) {
+    card.dataset.sortable = 'true';
+    if (sort.updatedAt) {
+      card.dataset.updatedAt = String(sort.updatedAt);
+      renderUpdated(card);
+    }
   }
 
   return card;
@@ -1146,14 +1177,15 @@ async function render() {
   if (myGeneration !== generation) return;
 
   /*
-   * 「新しい順」のときは、保存してある日時を先に聞いておく。storage を
-   * 1 回読むだけで網には出ないので、開いた瞬間から前回の並びで出せる。
-   * 知らないぶんは後から sweepDates が埋め、届いた順にまとめて並べ直す。
+   * 「新しい順」のときは、どれが対象かと保存してある日時を先に聞いておく。
+   * storage を 1 回読むだけで網には出ないので、開いた瞬間から前回の並びで
+   * 出せる。知らない日時は後から sweepDates が埋める。
    */
-  const knownDates = settings.sortByUpdated
-    ? await requestCachedDates(visibleNodes.filter((node) => node.url).map((node) => node.url))
-    : {};
+  const sortInfo = settings.sortByUpdated
+    ? await requestSortInfo(visibleNodes.filter((node) => node.url).map((node) => node.url))
+    : NO_SORT_INFO;
   if (myGeneration !== generation) return;
+  const sortable = new Set(sortInfo.sortable);
 
   const fragment = document.createDocumentFragment();
   const cards = [];
@@ -1162,7 +1194,10 @@ async function render() {
   visibleNodes.forEach((node, index) => {
     if (node.url) order += 1;
     const card = node.url
-      ? createBookmarkCard(node, order, knownDates[node.url])
+      ? createBookmarkCard(node, order, {
+          sortable: sortable.has(node.url),
+          updatedAt: sortInfo.dates[node.url],
+        })
       : createFolderCard(node, counts[index]);
     card.style.animationDelay = Math.min(index, 24) * 18 + 'ms';
     fragment.appendChild(card);
