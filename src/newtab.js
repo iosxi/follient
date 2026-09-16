@@ -121,6 +121,31 @@ function createFolderIcon() {
   return svg;
 }
 
+/**
+ * 一覧に並べる小さなフォルダ。移動先を選ぶダイアログで使う。
+ *
+ * createFolderIcon は色タイルの上に白で置く前提なので、紙の上では消える。
+ * 形は同じまま、面の色に合わせて currentColor で描くものを別に用意する。
+ */
+function createFolderGlyph() {
+  const svg = document.createElementNS(SVG_NS, 'svg');
+  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.setAttribute('class', 'folder-glyph');
+  svg.setAttribute('aria-hidden', 'true');
+
+  const body = document.createElementNS(SVG_NS, 'path');
+  body.setAttribute(
+    'd',
+    'M3 7.2c0-1.1.9-2 2-2h3.6c.6 0 1.2.28 1.6.76l.9 1.12c.38.48.95.76 1.56.76H19' +
+      'c1.1 0 2 .9 2 2v7.4c0 1.1-.9 2-2 2H5c-1.1 0-2-.9-2-2V7.2z'
+  );
+  body.setAttribute('fill', 'currentColor');
+  body.setAttribute('fill-opacity', '0.8');
+
+  svg.appendChild(body);
+  return svg;
+}
+
 /** 取得できなかったことを示す、斜線の入った画像のグリフ。 */
 function createNoImageIcon() {
   const svg = document.createElementNS(SVG_NS, 'svg');
@@ -644,18 +669,28 @@ async function refreshThumbnail(card) {
 let menuCard = null;
 
 function closeMenu() {
-  if (!menuCard) return;
-  const button = menuCard.querySelector('.menu-button');
-  if (button) button.setAttribute('aria-expanded', 'false');
-  menuCard = null;
+  if (menuCard) {
+    const button = menuCard.querySelector('.menu-button');
+    if (button) button.setAttribute('aria-expanded', 'false');
+    menuCard = null;
+  }
+  /*
+   * menuCard が無いときも必ず空にする。以前はここで戻っていたため、
+   * 何かの弾みで menuCard だけ先に外れると、古い項目が DOM に居残った。
+   * そこへ openMenu が足すと同じ項目が二重に並び、1 回押しただけで
+   * 移動が 2 つ走って互いを打ち消す。
+   */
   cardMenu.hidden = true;
   cardMenu.textContent = '';
 }
 
-function addMenuItem(label, onChoose) {
+/**
+ * @param {boolean} [danger] 取り消しの利かない操作。色を変えて区別する。
+ */
+function addMenuItem(label, onChoose, danger) {
   const item = document.createElement('button');
   item.type = 'button';
-  item.className = 'menu-item';
+  item.className = danger ? 'menu-item is-danger' : 'menu-item';
   item.setAttribute('role', 'menuitem');
   item.textContent = label;
   item.addEventListener('click', () => {
@@ -663,6 +698,14 @@ function addMenuItem(label, onChoose) {
     onChoose();
   });
   cardMenu.appendChild(item);
+}
+
+/** 押し間違えると困る操作を、そうでない操作から線で離す。 */
+function addMenuSeparator() {
+  const line = document.createElement('div');
+  line.className = 'menu-separator';
+  line.setAttribute('role', 'separator');
+  cardMenu.appendChild(line);
 }
 
 /** ボタンの下に出す。下に入らなければ上へ、右に溢れれば左へ寄せる。 */
@@ -689,10 +732,13 @@ function openMenu(card) {
   closeMenu();
   if (wasOpen) return; // 同じボタンをもう一度押したら閉じるだけ
 
-  // いまはサムネイルの取り直しだけ。フォルダには撮るものが無いので
-  // ボタン自体を出しておらず、ここへは来ない。
+  // フォルダのカードには ︙ を置いていないので、ここへは来ない。
   if (card.dataset.kind === 'folder') return;
+
   addMenuItem('サムネイル更新', () => refreshThumbnail(card));
+  addMenuItem('フォルダへ移動…', () => moveCard(card));
+  addMenuSeparator();
+  addMenuItem('ブックマークを削除', () => removeBookmark(card), true);
 
   const button = card.querySelector('.menu-button');
   menuCard = card;
@@ -700,8 +746,14 @@ function openMenu(card) {
   placeMenu(button);
   button.setAttribute('aria-expanded', 'true');
 
+  /*
+   * preventScroll は外せない。焦点を当てると土台はその要素を画面内へ
+   * 送り込もうとし、それが scroll を起こす。scroll では閉じる約束に
+   * してあるので、開いた直後に自分で閉じてしまう。項目が 1 つだった
+   * ころは menu が短く画面に収まっていたので表に出なかった。
+   */
   const first = cardMenu.querySelector('.menu-item');
-  if (first) first.focus();
+  if (first) first.focus({ preventScroll: true });
 }
 
 cardMenu.addEventListener('click', (event) => event.stopPropagation());
@@ -716,6 +768,595 @@ document.addEventListener('keydown', (event) => {
 // 開いたまま画面が動くとボタンから離れてしまうので、その場で閉じる
 window.addEventListener('scroll', closeMenu, true);
 window.addEventListener('resize', closeMenu);
+
+/* ------------------------------------------------------------------ *
+ * 知らせ (トースト)
+ *
+ * 移動も削除もカードが目の前から消える操作で、画面を見ているだけでは
+ * 「何がどこへ行ったのか」が分からない。何をしたかを文で残し、そのまま
+ * 取り消せるようにする。
+ * ------------------------------------------------------------------ */
+
+const toastTray = document.getElementById('toast-tray');
+
+/** 知らせを出しておく長さ。「元に戻す」を押す間を取る。 */
+const TOAST_MS = 9000;
+
+let toastTimer = 0;
+
+function hideToast() {
+  clearTimeout(toastTimer);
+  toastTray.textContent = '';
+}
+
+/**
+ * 画面の下に知らせを出す。前の知らせは消す。
+ *
+ * @param {string} text
+ * @param {{label: string, onChoose: function}} [action] 「元に戻す」など。
+ */
+function showToast(text, action) {
+  hideToast();
+
+  const toast = document.createElement('div');
+  toast.className = 'toast';
+
+  const body = document.createElement('span');
+  body.className = 'toast-text';
+  body.textContent = text;
+  toast.appendChild(body);
+
+  if (action) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'toast-action';
+    button.textContent = action.label;
+    button.addEventListener('click', () => {
+      hideToast();
+      action.onChoose();
+    });
+    toast.appendChild(button);
+  }
+
+  const close = document.createElement('button');
+  close.type = 'button';
+  close.className = 'toast-close';
+  close.setAttribute('aria-label', '閉じる');
+  close.textContent = '✕';
+  close.addEventListener('click', hideToast);
+  toast.appendChild(close);
+
+  toastTray.appendChild(toast);
+  toastTimer = setTimeout(hideToast, TOAST_MS);
+}
+
+function errorText(error) {
+  return error && error.message ? error.message : String(error);
+}
+
+/**
+ * 知らせに出す名前。画面に出ているものと同じにする。
+ * ブックマーク名が URL のときは OG タイトルを出しているので、
+ * node.title をそのまま使うと見えているものと食い違う。
+ */
+function cardLabel(card) {
+  const title = card.querySelector('.title');
+  const text = ((title && title.textContent) || '').trim();
+  const name = text || card.dataset.url || 'このブックマーク';
+  return name.length > 48 ? name.slice(0, 47) + '…' : name;
+}
+
+/* ------------------------------------------------------------------ *
+ * フォルダの道筋
+ * ------------------------------------------------------------------ */
+
+/** ルートの ID。render() が毎回読んでいるので、そこで控えたものを使う。 */
+let rootIdCache = '';
+
+async function bookmarksRootId() {
+  if (!rootIdCache) rootIdCache = (await browser.bookmarks.getTree())[0].id;
+  return rootIdCache;
+}
+
+/**
+ * フォルダを「aa/bb/cc」の形で表す。区切りはパンくずに合わせる。
+ * ルート自身は名前を持たないので、パンくずと同じ「ブックマーク」にする。
+ */
+async function folderPathLabel(folderId) {
+  const rootId = await bookmarksRootId();
+  const path = await buildPath(folderId);
+  const names = path
+    .filter((node) => node.id !== rootId)
+    .map((node) => node.title || '(名称未設定)');
+  return names.length ? names.join('/') : 'ブックマーク';
+}
+
+/* ------------------------------------------------------------------ *
+ * よく使う移動先
+ *
+ * 移動が成功するたびに行き先を 1 つ数える。回数の多い順、同数なら最後に
+ * 使った順。移動した実績だけを見ており、閲覧やフォルダの中身は数えない。
+ * ------------------------------------------------------------------ */
+
+const MOVE_HISTORY_KEY = 'move:recent';
+
+/** 覚えておく行き先の数。溢れたら使われていないものから捨てる。 */
+const MOVE_HISTORY_MAX = 30;
+
+/** ダイアログの先頭に出す数。 */
+const MOVE_QUICK_COUNT = 3;
+
+async function readMoveHistory() {
+  try {
+    const stored = await browser.storage.local.get(MOVE_HISTORY_KEY);
+    const history = stored[MOVE_HISTORY_KEY];
+    return history && typeof history === 'object' ? history : {};
+  } catch (e) {
+    return {};
+  }
+}
+
+function saveMoveHistory(history) {
+  return browser.storage.local.set({ [MOVE_HISTORY_KEY]: history }).catch(() => {
+    // 覚えられなくても、移動そのものは済んでいる
+  });
+}
+
+/** 「よく使う」の順。回数が先、同数なら最後に使った時刻で分ける。 */
+function compareMoveEntries(a, b) {
+  if (b.n !== a.n) return b.n - a.n;
+  return b.at - a.at;
+}
+
+/** 移動が成功したときだけ呼ぶ。ここが「よく使う」の唯一の根拠。 */
+async function bumpMoveHistory(folderId) {
+  const history = await readMoveHistory();
+  const entry = history[folderId] || { n: 0, at: 0 };
+  history[folderId] = { n: entry.n + 1, at: Date.now() };
+
+  const ids = Object.keys(history);
+  if (ids.length > MOVE_HISTORY_MAX) {
+    ids.sort((a, b) => compareMoveEntries(history[a], history[b]));
+    for (const id of ids.slice(MOVE_HISTORY_MAX)) delete history[id];
+  }
+  await saveMoveHistory(history);
+}
+
+/**
+ * よく使う移動先を上から数件返す。
+ *
+ * 消えたフォルダは覚え書きからも落とす。放っておくと、二度と選べない
+ * 名前が上位を占めたまま居座る。いまの親も外す。移しても何も起きない
+ * 行き先で 3 つの枠を 1 つ潰すのは惜しい。
+ */
+async function topMoveTargets(excludeId, count) {
+  const history = await readMoveHistory();
+  const ids = Object.keys(history).sort((a, b) =>
+    compareMoveEntries(history[a], history[b])
+  );
+  if (ids.length === 0) return [];
+
+  // まとめて get すると 1 件でも欠けたところで全体が失敗するので 1 件ずつ
+  const found = await Promise.all(
+    ids.map((id) =>
+      browser.bookmarks.get(id).then(
+        (nodes) => nodes[0] || null,
+        () => null
+      )
+    )
+  );
+
+  const gone = ids.filter((id, index) => !found[index]);
+  if (gone.length > 0) {
+    for (const id of gone) delete history[id];
+    saveMoveHistory(history);
+  }
+
+  const rootId = await bookmarksRootId();
+  const picked = [];
+  for (let i = 0; i < found.length && picked.length < count; i += 1) {
+    const node = found[i];
+    if (!node || node.url) continue; // 消えた / フォルダでなくなった
+    if (node.id === excludeId || node.id === rootId) continue;
+    picked.push(node);
+  }
+
+  return Promise.all(
+    picked.map(async (node) => ({
+      id: node.id,
+      title: node.title || '(名称未設定のフォルダ)',
+      path: await folderPathLabel(node.id),
+    }))
+  );
+}
+
+/* ------------------------------------------------------------------ *
+ * 移動先を選ぶ
+ *
+ * Google ドライブの「移動」に倣う。木を広げて全体を見せるのではなく、
+ * フォルダを 1 階層ずつ**入っていく**。いま開いている場所がそのまま
+ * 行き先で、下の「ここに移動」で確定する。どこへ入れるのかが常に見出しに
+ * 出ているので、深いフォルダでも選び間違えにくい。
+ *
+ * 土台の <dialog> を showModal() で開く。覆い・フォーカスの閉じ込め・
+ * Esc での取り消しが土台の実装で済み、自前で組むより取りこぼしが無い。
+ * ------------------------------------------------------------------ */
+
+const moveDialog = document.getElementById('move-dialog');
+const moveSubject = document.getElementById('move-subject');
+const moveQuick = document.getElementById('move-quick');
+const moveQuickList = document.getElementById('move-quick-list');
+const moveUpButton = document.getElementById('move-up');
+const moveCurrentName = document.getElementById('move-current');
+const moveList = document.getElementById('move-list');
+const moveNote = document.getElementById('move-note');
+const moveOkButton = document.getElementById('move-ok');
+const moveCancelButton = document.getElementById('move-cancel');
+
+/** いま開いている場所。「ここに移動」の行き先になる。 */
+let moveCursor = '';
+/** 動かすものの、いまの親。ここへは移せない。 */
+let moveHome = '';
+/** 選ばれた行き先を呼び出し側へ返す。 */
+let moveResolve = null;
+/** 開いた回数。閉じて開き直したあとに、古い読み出しが書き込むのを防ぐ。 */
+let moveGeneration = 0;
+
+/**
+ * 移動先を選ばせる。選ばれたフォルダの ID か、やめたときは null を返す。
+ * @param {object} node 動かすブックマーク (browser.bookmarks のノード)
+ * @param {string} label 画面に出ている名前
+ */
+function chooseMoveTarget(node, label) {
+  finishMove(null); // 万一開きっぱなしなら畳んでから
+  moveGeneration += 1;
+  moveHome = node.parentId || '';
+  moveSubject.textContent = '「' + label + '」の移動先を選んでください。';
+
+  /*
+   * 中身を読む前に、行き先を空にして「ここに移動」を封じる。
+   * 残しておくと、開いた直後の一瞬だけ前回の行き先を押せてしまう。
+   */
+  moveCursor = '';
+  moveOkButton.disabled = true;
+  moveQuick.hidden = true;
+  moveQuickList.textContent = '';
+  moveList.textContent = '';
+  moveCurrentName.textContent = '';
+  moveNote.hidden = true;
+
+  const promise = new Promise((resolve) => {
+    moveResolve = resolve;
+  });
+
+  if (!moveDialog.open) moveDialog.showModal();
+  fillQuickTargets(moveGeneration);
+  showMoveFolder(moveHome, moveGeneration);
+  return promise;
+}
+
+/**
+ * 選択を終える。close() が 'close' を呼び戻すが、先に moveResolve を
+ * 空にしてあるので二度は解決しない。
+ */
+function finishMove(folderId) {
+  const resolve = moveResolve;
+  moveResolve = null;
+  if (moveDialog.open) moveDialog.close();
+  if (resolve) resolve(folderId || null);
+}
+
+/** 先頭の「よく使う移動先」。押したその場で移動する。 */
+async function fillQuickTargets(myGeneration) {
+  moveQuickList.textContent = '';
+  moveQuick.hidden = true;
+
+  const home = moveHome;
+  const targets = await topMoveTargets(home, MOVE_QUICK_COUNT);
+  if (myGeneration !== moveGeneration || !moveDialog.open) return;
+  if (targets.length === 0) return;
+
+  for (const target of targets) {
+    const row = document.createElement('button');
+    row.type = 'button';
+    row.className = 'move-quick-item';
+    row.appendChild(createFolderGlyph());
+
+    const text = document.createElement('span');
+    text.className = 'move-quick-text';
+
+    const name = document.createElement('span');
+    name.className = 'move-quick-name';
+    name.textContent = target.title;
+    text.appendChild(name);
+
+    // 同じ名前のフォルダが複数あっても見分けられるよう道筋を添える
+    const path = document.createElement('span');
+    path.className = 'move-quick-path';
+    path.textContent = target.path;
+    text.appendChild(path);
+
+    row.appendChild(text);
+
+    const go = document.createElement('span');
+    go.className = 'move-quick-go';
+    go.setAttribute('aria-hidden', 'true');
+    go.textContent = '→';
+    row.appendChild(go);
+
+    row.title = target.path + ' へ移動';
+    row.addEventListener('click', () => finishMove(target.id));
+    moveQuickList.appendChild(row);
+  }
+
+  moveQuick.hidden = false;
+}
+
+/** 開く場所を切り替え、その中のフォルダを並べる。 */
+async function showMoveFolder(folderId, myGeneration) {
+  const generationAtCall =
+    myGeneration === undefined ? moveGeneration : myGeneration;
+  const rootId = await bookmarksRootId();
+  if (generationAtCall !== moveGeneration || !moveDialog.open) return;
+
+  const id = folderId || rootId;
+  moveCursor = id;
+  moveList.textContent = '';
+
+  const path = await buildPath(id);
+  // 待っている間に別のフォルダが選ばれていたら、この結果は捨てる
+  if (generationAtCall !== moveGeneration || moveCursor !== id || !moveDialog.open) {
+    return;
+  }
+
+  const visible = path.filter((node) => node.id !== rootId);
+  const leaf = visible.length ? visible[visible.length - 1] : null;
+  moveCurrentName.textContent = leaf ? leaf.title || '(名称未設定)' : 'ブックマーク';
+
+  const parent = visible.length >= 2 ? visible[visible.length - 2].id : rootId;
+  moveUpButton.disabled = id === rootId;
+  moveUpButton.onclick = () => showMoveFolder(parent);
+
+  let children = [];
+  try {
+    children = await browser.bookmarks.getChildren(id);
+  } catch (e) {
+    children = [];
+  }
+  if (generationAtCall !== moveGeneration || moveCursor !== id || !moveDialog.open) {
+    return;
+  }
+
+  const folders = children.filter((node) => !node.url && node.type !== 'separator');
+
+  for (const folder of folders) {
+    const row = document.createElement('button');
+    row.type = 'button';
+    row.className = 'move-row';
+    row.appendChild(createFolderGlyph());
+
+    const name = document.createElement('span');
+    name.className = 'move-row-name';
+    name.textContent = folder.title || '(名称未設定のフォルダ)';
+    row.appendChild(name);
+
+    if (folder.id === moveHome) {
+      const note = document.createElement('span');
+      note.className = 'move-row-note';
+      note.textContent = '現在の場所';
+      row.appendChild(note);
+    }
+
+    const enter = document.createElement('span');
+    enter.className = 'move-row-enter';
+    enter.setAttribute('aria-hidden', 'true');
+    enter.textContent = '›';
+    row.appendChild(enter);
+
+    row.addEventListener('click', () => showMoveFolder(folder.id));
+    moveList.appendChild(row);
+  }
+
+  if (folders.length === 0) {
+    const empty = document.createElement('p');
+    empty.className = 'move-empty';
+    empty.textContent = 'この中にフォルダはありません。';
+    moveList.appendChild(empty);
+  }
+
+  /*
+   * ルートは Firefox では入れ物ではなく、ブックマークを直接は置けない。
+   * 押せるように見せてから失敗させるより、押せなくして理由を出す。
+   */
+  const note =
+    id === rootId
+      ? 'いちばん外側には直接置けません。フォルダを選んでください。'
+      : id === moveHome
+        ? 'このブックマークは、いまここにあります。'
+        : '';
+  moveOkButton.disabled = Boolean(note);
+  moveNote.textContent = note;
+  moveNote.hidden = !note;
+}
+
+moveOkButton.addEventListener('click', () => {
+  if (moveCursor) finishMove(moveCursor);
+});
+moveCancelButton.addEventListener('click', () => finishMove(null));
+// Esc も、覆いを押したのも「やめる」
+moveDialog.addEventListener('close', () => finishMove(null));
+moveDialog.addEventListener('click', (event) => {
+  if (event.target === moveDialog) finishMove(null);
+});
+
+/* ------------------------------------------------------------------ *
+ * 確認ダイアログ
+ * ------------------------------------------------------------------ */
+
+const confirmDialog = document.getElementById('confirm-dialog');
+const confirmTitle = document.getElementById('confirm-title');
+const confirmBody = document.getElementById('confirm-body');
+const confirmDetail = document.getElementById('confirm-detail');
+const confirmOkButton = document.getElementById('confirm-ok');
+const confirmCancelButton = document.getElementById('confirm-cancel');
+
+let confirmResolve = null;
+
+/**
+ * 確認を取る。はい/いいえを Promise で返す。
+ *
+ * 最初の当たりは「キャンセル」に置く。Enter や Space を押しただけで
+ * 消えてしまうと、確認を挟んだ意味が無くなるため。
+ */
+function askConfirm(title, body, detail, okLabel) {
+  finishConfirm(false);
+  confirmTitle.textContent = title;
+  confirmBody.textContent = body;
+  confirmDetail.textContent = detail || '';
+  confirmOkButton.textContent = okLabel;
+
+  const promise = new Promise((resolve) => {
+    confirmResolve = resolve;
+  });
+
+  if (!confirmDialog.open) confirmDialog.showModal();
+  confirmCancelButton.focus();
+  return promise;
+}
+
+function finishConfirm(answer) {
+  const resolve = confirmResolve;
+  confirmResolve = null;
+  if (confirmDialog.open) confirmDialog.close();
+  if (resolve) resolve(answer);
+}
+
+confirmOkButton.addEventListener('click', () => finishConfirm(true));
+confirmCancelButton.addEventListener('click', () => finishConfirm(false));
+// Esc も覆いも「やめる」= 消さない側に倒す
+confirmDialog.addEventListener('close', () => finishConfirm(false));
+confirmDialog.addEventListener('click', (event) => {
+  if (event.target === confirmDialog) finishConfirm(false);
+});
+
+/* ------------------------------------------------------------------ *
+ * ︙ の操作 — 移動と削除
+ * ------------------------------------------------------------------ */
+
+/** ︙ の「フォルダへ移動…」。行き先を選ばせ、動かし、結果を知らせる。 */
+async function moveCard(card) {
+  const id = card.dataset.id;
+  if (!id) return;
+  // 二重に開かせない。開き直すと、先に開いていたほうが「やめた」ことになる
+  if (moveDialog.open) return;
+
+  let node;
+  try {
+    node = (await browser.bookmarks.get(id))[0];
+  } catch (e) {
+    showToast('このブックマークは見つかりませんでした。');
+    return;
+  }
+  if (!node) return;
+
+  const label = cardLabel(card);
+  const fromId = node.parentId;
+  const fromIndex = node.index;
+
+  const toId = await chooseMoveTarget(node, label);
+  if (!toId || toId === fromId) return;
+
+  // 動かす前に読む。動かしたあとでは「どこから」が分からなくなる。
+  const [fromPath, toPath] = await Promise.all([
+    folderPathLabel(fromId),
+    folderPathLabel(toId),
+  ]);
+
+  try {
+    await browser.bookmarks.move(id, { parentId: toId });
+  } catch (e) {
+    showToast('移動できませんでした: ' + errorText(e));
+    return;
+  }
+
+  bumpMoveHistory(toId);
+  showToast('「' + label + '」を ' + fromPath + ' から ' + toPath + ' に移動しました', {
+    label: '元に戻す',
+    onChoose: () => undoMove(id, fromId, fromIndex, label),
+  });
+}
+
+/** 元の親の、元の位置へ戻す。ここでは「よく使う」を数えない。 */
+async function undoMove(id, parentId, index, label) {
+  try {
+    await browser.bookmarks.move(id, { parentId, index });
+  } catch (e) {
+    showToast('元に戻せませんでした: ' + errorText(e));
+    return;
+  }
+  showToast('「' + label + '」を元の場所に戻しました');
+}
+
+/**
+ * ︙ の「ブックマークを削除」。
+ *
+ * v19 で一度外した機能。「押し間違いで元に戻せない操作が、サムネイルの
+ * 取り直しと同じ場所に並んでいた」のが理由だったので、戻すにあたって
+ * 二重に手当てする。先に確認を取り、消したあとも知らせから元に戻せる。
+ * メニューでも区切り線で離し、色を変えてある。
+ *
+ * 消すのは 1 件のブックマークだけ。フォルダのカードには ︙ を置いて
+ * いないので、中身ごと消える removeTree はどこからも呼ばない。
+ */
+async function removeBookmark(card) {
+  const id = card.dataset.id;
+  if (!id) return;
+
+  let node;
+  try {
+    node = (await browser.bookmarks.get(id))[0];
+  } catch (e) {
+    return;
+  }
+  if (!node) return;
+
+  const label = cardLabel(card);
+  const ok = await askConfirm(
+    'ブックマークを削除',
+    '「' + label + '」を削除します。',
+    node.url,
+    '削除'
+  );
+  if (!ok) return;
+
+  try {
+    await browser.bookmarks.remove(id);
+  } catch (e) {
+    showToast('削除できませんでした: ' + errorText(e));
+    return;
+  }
+
+  showToast('「' + label + '」を削除しました', {
+    label: '元に戻す',
+    onChoose: () => undoRemove(node, label),
+  });
+}
+
+/** 消したブックマークを作り直す。ID は新しくなるが、場所と中身は戻る。 */
+async function undoRemove(node, label) {
+  try {
+    await browser.bookmarks.create({
+      parentId: node.parentId,
+      index: node.index,
+      title: node.title,
+      url: node.url,
+    });
+  } catch (e) {
+    showToast('元に戻せませんでした: ' + errorText(e));
+    return;
+  }
+  showToast('「' + label + '」を元に戻しました');
+}
 
 /* ------------------------------------------------------------------ *
  * rawkuma を新しい順に並べる (sortByUpdated)
@@ -1134,6 +1775,7 @@ async function render() {
 
   const treeRoot = (await browser.bookmarks.getTree())[0];
   const rootId = treeRoot.id;
+  rootIdCache = rootId;
   const folderId = folderIdFromHash() || rootId;
 
   let children;

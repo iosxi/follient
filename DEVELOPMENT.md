@@ -29,7 +29,7 @@ AMO で署名した番号は**永久に消費される**。同じ番号での再
 | `manifest.json` | MV2。`chrome_url_overrides.newtab` で新しいタブを差し替える |
 | `src/newtab.html` | 画面の骨格とカードのテンプレート |
 | `src/newtab.css` | タイル配置と配色（ライト/ダーク両対応） |
-| `src/newtab.js` | ブックマークの読み出し、masonry、遅延読み込み、階層移動 |
+| `src/newtab.js` | ブックマークの読み出し、masonry、遅延読み込み、階層移動、︙ の操作 |
 | `src/background.js` | OGP の取得・解析・キャッシュ |
 | `tools/build-xpi.js` | 配布用 XPI の作成 |
 | `tools/sign.js` | AMO 署名 |
@@ -363,6 +363,47 @@ rawkuma.net の作品ページと `/latest-update/` を実際に取って中を�
 
 日時の寿命は話数と同じ時計 (`CHAPTER_TTL_MS`) に相乗りさせた。どちらも
 rawkuma のページにしか無いので、よその何百件を毎日読み直すことにはならない。
+
+### ブックマークのルートには直接置けない
+
+移動先を選ぶダイアログはルートまで上がれるが、そこでは「ここに移動」を
+押せなくしてある。Firefox 155.0.1 で実測した結果は次のとおり。
+
+| やったこと | 結果 |
+| --- | --- |
+| `bookmarks.move(id, {parentId: 'root________'})` | **throw** `The bookmark root cannot be modified` |
+| `bookmarks.create({parentId: 'root________', ...})` | **throw** 同文 |
+| `bookmarks.getChildren('root________')` | OK (4 件) |
+| フォルダ間の `move` | OK |
+| `move(id, {parentId, index})` で元の位置へ | OK |
+| `remove` 後の `create({parentId, index, title, url})` | OK (ID は新しくなる) |
+
+読めるが書けないので、ルートは一覧としては出す。押せるように見せてから
+失敗させるより、押せなくして理由を出すほうが良い。下 2 行は「元に戻す」の裏取りで、
+移動も削除も元の場所と位置へ戻せることを確かめてある。
+
+### メニューの先頭に焦点を当てると、それだけで閉じる
+
+`openMenu` は最初の項目に `focus()` する。土台は焦点を当てた要素を画面内へ
+送り込もうとし、それが **scroll を起こす**。follient は
+
+```js
+window.addEventListener('scroll', closeMenu, true);
+```
+
+で scroll で閉じる約束にしているので、**開いた 15ms 後に自分で閉じる**。
+
+v25 までは項目が 1 つでメニューが短く、画面に収まっていたので表に出なかった。
+v26 で項目を 3 つに増やしたとたんに出た。`focus({ preventScroll: true })` にする。
+位置は `placeMenu` が画面内に丸めているので、送り込まなくても見える。
+
+あわせて `closeMenu` は、`menuCard` が空でも `cardMenu` を必ず空にするようにした。
+以前は先頭で return していたため、何かの弾みで `menuCard` だけ先に外れると古い項目が
+DOM に居残った。そこへ `openMenu` が足すと同じ項目が二重に並び、1 回押しただけで
+`moveCard` が 2 つ走り、後からの 1 つが先のダイアログを「やめた」扱いで閉じてしまっていた。
+
+どちらも、ヘッドレスの Firefox で DOM を叩いて見つけた。画面を見ているだけでは
+「たまにメニューが出ない」としか分からない種類の不具合。
 
 ### サムネイルの実体を手元に持つ
 

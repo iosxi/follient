@@ -25,6 +25,53 @@
          メニューは 1 つだけ作って body 直下に置き、開くたびに位置を合わせる。 -->
     <div class="card-menu" id="card-menu" role="menu" hidden></div>
 
+    <!-- 操作の結果を知らせる。移動と削除には「元に戻す」を添える。 -->
+    <div class="toast-tray" id="toast-tray" role="status" aria-live="polite"></div>
+
+    <!-- 移動先を選ぶ。木を広げるのではなくフォルダを 1 階層ずつ入っていき、
+         いま開いている場所をそのまま移動先にする (Google ドライブと同じ)。 -->
+    <dialog class="dialog" id="move-dialog" aria-labelledby="move-title">
+      <div class="dialog-head">
+        <h2 class="dialog-title" id="move-title">フォルダへ移動</h2>
+        <p class="dialog-subject" id="move-subject"></p>
+      </div>
+
+      <!-- よく使う移動先。押すとその場で移動する (たどる必要がない) -->
+      <div class="move-quick" id="move-quick" hidden>
+        <p class="move-section">
+          よく使う移動先<span class="move-section-hint">（押すとすぐ移動します）</span>
+        </p>
+        <div class="move-quick-list" id="move-quick-list"></div>
+      </div>
+
+      <div class="move-head">
+        <button class="move-up" id="move-up" type="button" aria-label="一つ上の階層へ">
+          <span aria-hidden="true">←</span>
+        </button>
+        <span class="move-current" id="move-current"></span>
+      </div>
+      <div class="move-list" id="move-list"></div>
+
+      <div class="dialog-actions">
+        <p class="dialog-note" id="move-note" hidden></p>
+        <button class="dialog-button" id="move-cancel" type="button">キャンセル</button>
+        <button class="dialog-button is-primary" id="move-ok" type="button">ここに移動</button>
+      </div>
+    </dialog>
+
+    <!-- 消す前の確認。既定の当たりはキャンセル側に置く。 -->
+    <dialog class="dialog is-narrow" id="confirm-dialog" aria-labelledby="confirm-title">
+      <div class="dialog-head">
+        <h2 class="dialog-title" id="confirm-title"></h2>
+        <p class="dialog-subject" id="confirm-body"></p>
+        <p class="dialog-detail" id="confirm-detail"></p>
+      </div>
+      <div class="dialog-actions">
+        <button class="dialog-button" id="confirm-cancel" type="button">キャンセル</button>
+        <button class="dialog-button is-danger" id="confirm-ok" type="button">削除</button>
+      </div>
+    </dialog>
+
     <template id="card-template">
       <!-- カードのリンクは中身を包まず、上に重ねる。包んでしまうと
            チャプターのリンクが <a> の入れ子になり成り立たないため。 -->
