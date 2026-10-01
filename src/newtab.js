@@ -37,6 +37,20 @@ let gapUnit = 18;
 /** 描画世代。非同期処理が古い画面に書き込むのを防ぐ。 */
 let generation = 0;
 
+/**
+ * いま画面に出しているブックマークの範囲。ブックマークの変更が画面に
+ * 関係するかを見分けるのに使う。描画の途中は null。
+ * - pathIds: 開いているフォルダとその祖先 (パンくず)
+ * - childIds: カードになっている子
+ * - childFolderIds: 子のうちフォルダ (カードに件数を出している)
+ */
+let shownTree = null;
+
+/** そのフォルダの中身の増減が、今の画面に出るか。 */
+function showsChildrenOf(parentId) {
+  return parentId === shownTree.folderId || shownTree.childFolderIds.has(parentId);
+}
+
 function readGridMetrics() {
   const styles = getComputedStyle(document.documentElement);
   rowUnit = parseFloat(styles.getPropertyValue('--row')) || 4;
@@ -1759,6 +1773,8 @@ function renderNavigation(path, rootId) {
 async function render() {
   generation += 1;
   const myGeneration = generation;
+  // 描き終えるまでは、どの変更も「関係あり」として扱う
+  shownTree = null;
 
   closeMenu();
   viewportObserver.disconnect();
@@ -1791,6 +1807,13 @@ async function render() {
   const path = await buildPath(folderId);
   if (myGeneration !== generation) return;
   renderNavigation(path, rootId);
+
+  shownTree = {
+    folderId,
+    pathIds: new Set(path.map((node) => node.id)),
+    childIds: new Set(children.map((node) => node.id)),
+    childFolderIds: new Set(children.filter((node) => !node.url).map((node) => node.id)),
+  };
 
   const leaf = path.length ? path[path.length - 1] : null;
   document.title = leaf && leaf.id !== rootId && leaf.title ? leaf.title : 'follient';
@@ -1867,10 +1890,27 @@ window.addEventListener('hashchange', () => {
   window.scrollTo({ top: 0 });
 });
 
-// ブックマークが変更されたら表示を追随させる
-for (const eventName of ['onCreated', 'onRemoved', 'onChanged', 'onMoved']) {
+/*
+ * ブックマークが変更されたら表示を追随させる。ただし今の画面に関係する
+ * 変更だけ。描き直しは全カードを作り直すので、別ウィンドウでよそのフォルダに
+ * 登録しただけで、見ている画面が一瞬空になってしまう。
+ */
+const watchBookmarks = {
+  onCreated: (_, node) => showsChildrenOf(node.parentId),
+  onRemoved: (id, info) => showsChildrenOf(info.parentId) || shownTree.pathIds.has(id),
+  onChanged: (id) => shownTree.childIds.has(id) || shownTree.pathIds.has(id),
+  onMoved: (id, info) =>
+    showsChildrenOf(info.parentId) ||
+    showsChildrenOf(info.oldParentId) ||
+    shownTree.pathIds.has(id),
+};
+
+for (const [eventName, affects] of Object.entries(watchBookmarks)) {
   const event = browser.bookmarks[eventName];
-  if (event) event.addListener(() => render());
+  if (!event) continue;
+  event.addListener((...args) => {
+    if (!shownTree || affects(...args)) render();
+  });
 }
 
 readGridMetrics();
