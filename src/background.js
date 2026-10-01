@@ -24,6 +24,23 @@
    */
   const EXTRACT_VERSION = 9;
 
+  /**
+   * rawkuma.onl だけの取り出し方の版。
+   *
+   * v26 までは rawkuma.onl を知らず、サイト共通のロゴを作品の絵として
+   * 拾い、話数も日時も持たない結果を保存していた。EXTRACT_VERSION を
+   * 上げると何百件あるよその結果まで全部取り直すことになるので、
+   * rawkuma.onl の分だけをこちらの版で見分けて捨てる。
+   */
+  const ONL_EXTRACT_VERSION = 1;
+
+  /** 保存してある結果が、今の取り出し方で作られたものか。 */
+  function isCurrentEntry(url, entry) {
+    if (!entry || entry.v !== EXTRACT_VERSION) return false;
+    if (isOnlHost(url) && entry.onl !== ONL_EXTRACT_VERSION) return false;
+    return true;
+  }
+
   /** 画像が取れた結果の寿命。 */
   const CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
@@ -102,7 +119,7 @@
     const entry = stored[key];
     if (!entry) return null;
     // 取り出し方が変わっていたら、古い判断は当てにならない
-    if (entry.v !== EXTRACT_VERSION) return null;
+    if (!isCurrentEntry(url, entry)) return null;
     const ttl = entry.data && entry.data.image ? CACHE_TTL_MS : CACHE_TTL_EMPTY_MS;
     if (Date.now() - entry.at > ttl) return null;
 
@@ -124,9 +141,9 @@
 
   async function writeCache(url, data) {
     try {
-      await browser.storage.local.set({
-        [CACHE_PREFIX + url]: { at: Date.now(), v: EXTRACT_VERSION, data },
-      });
+      const entry = { at: Date.now(), v: EXTRACT_VERSION, data };
+      if (isOnlHost(url)) entry.onl = ONL_EXTRACT_VERSION;
+      await browser.storage.local.set({ [CACHE_PREFIX + url]: entry });
     } catch (e) {
       // 容量超過などは致命的ではないので握りつぶす
       console.warn('follient: cache write failed', e);
@@ -177,6 +194,9 @@
       const stored = await browser.storage.local.get(key);
       const entry = stored[key];
       if (!entry || !entry.image) return null;
+      // v26 までに rawkuma.onl で保存したのはサイト共通のロゴ。作品の絵では
+      // ないので見なかったことにする。読めた絵が届けば上書きされる。
+      if (isOnlHost(url) && entry.onl !== ONL_EXTRACT_VERSION) return null;
       // 期限は設けない。一度取れた絵は、消せと言われるまで持ち続ける。
       // 渋い相手から 1 枚取るのに何十秒もかかることがあり、黙って捨てると
       // その苦労をやり直させることになる。取り直しは ︙ の「サムネイル更新」
@@ -198,7 +218,9 @@
 
   async function writeThumb(url, image) {
     try {
-      await browser.storage.local.set({ [thumbKey(url)]: { at: Date.now(), image } });
+      const entry = { at: Date.now(), image };
+      if (isOnlHost(url)) entry.onl = ONL_EXTRACT_VERSION;
+      await browser.storage.local.set({ [thumbKey(url)]: entry });
 
       const stored = await browser.storage.local.get(THUMB_INDEX_KEY);
       let index = Array.isArray(stored[THUMB_INDEX_KEY]) ? stored[THUMB_INDEX_KEY] : [];
@@ -631,15 +653,17 @@
    * @param {boolean} [reload] HTTP キャッシュを無視して取り直す。
    *   「サムネイル更新」からの取得で使う。保存済みの応答をそのまま
    *   読み返しては、更新を選んだ意味が無いため。
+   * @param {boolean} [revalidate] 手元の写しを使う前に、必ずサーバーに
+   *   確かめる。写しの鮮度を見ない force-cache では困るページ用。
    */
-  async function fetchText(url, accept, typePattern, reload) {
+  async function fetchText(url, accept, typePattern, reload, revalidate) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
     try {
       const response = await fetch(url, {
         credentials: 'omit',
         redirect: 'follow',
-        cache: reload ? 'reload' : 'force-cache',
+        cache: reload ? 'reload' : revalidate ? 'no-cache' : 'force-cache',
         signal: controller.signal,
         // 言語を名乗らない要求を弾くサイトがある。ブラウザとして自然な形にする。
         headers: { Accept: accept, 'Accept-Language': 'ja,en;q=0.8' },
@@ -676,15 +700,31 @@
   const CHAPTER_HOST_RE = /(^|\.)rawkuma\.net$/i;
 
   /**
-   * この URL が rawkuma のものか。
+   * rawkuma の移転先。ドメインだけでなく中身の作りがまるごと違うので、
+   * 拾い方は別に持つ (「rawkuma.onl」の節)。
+   */
+  const ONL_HOST_RE = /(^|\.)rawkuma\.onl$/i;
+
+  /**
+   * この URL が rawkuma (.net / .onl) のものか。
    *
-   * 話数の表示も更新日時も、この 1 サイトにしか付けない。判定を 1 か所に
+   * 話数の表示も更新日時も、このサイトにしか付けない。判定を 1 か所に
    * まとめておかないと、片方だけよそのサイトに漏れる。v24 では日時の側が
    * 全サイトに漏れていて、関係のないフォルダまで並びが変わってしまった。
    */
   function isChapterHost(url) {
     try {
-      return CHAPTER_HOST_RE.test(new URL(url).hostname);
+      const host = new URL(url).hostname;
+      return CHAPTER_HOST_RE.test(host) || ONL_HOST_RE.test(host);
+    } catch (e) {
+      return false;
+    }
+  }
+
+  /** この URL が rawkuma.onl のものか。.net とは拾い方が違う。 */
+  function isOnlHost(url) {
+    try {
+      return ONL_HOST_RE.test(new URL(url).hostname);
     } catch (e) {
       return false;
     }
@@ -707,6 +747,7 @@
   const MANGA_PATH_RE = /^\/manga\/[^/]+\/?$/i;
 
   function chaptersFromDoc(doc, baseUrl) {
+    if (isOnlHost(baseUrl)) return onlChaptersFromDoc(doc, baseUrl);
     if (!isChapterHost(baseUrl)) return null;
     let here;
     try {
@@ -769,6 +810,110 @@
     return best;
   }
 
+  /* ------------------------------------------------------------------ *
+   * rawkuma.onl
+   *
+   * rawkuma.net から移ってきた先。作品の URL (slug) も、話数の URL の形も、
+   * 日時の在り処も違うので、.net の読み替えでは済まない。.net の拾い方には
+   * 手を付けず、こちらは別に持つ。以下は rawkuma.onl を実際に取って
+   * 見た結果 (2026-10-01):
+   *
+   * - 作品ページは /manga/<作品> で、末尾に / を付けると 404。
+   * - 話数は /manga/<作品>/chapter-<話数>。記事 ID は付かない。
+   *   話数には 7.2 のような小数もある。
+   * - 作品ページの横の欄に、**よその作品の話数とカバー**が並んでいる。
+   *   話数を拾うときは同じ作品のものに絞らないと混ざる。
+   * - 話数の横の日時は「10 月前」のような相対表記だけで、時刻が取れない。
+   *   絶対時刻は JSON-LD の Article.dateModified にある。トップの「最新」の
+   *   並びと 10 作中 9 作が一致した。外れた 1 作は、作品ページ自体が
+   *   Cloudflare に 21 時間前のまま残っていたもので (Age: 76976)、
+   *   そちらにはまだ最新話が載っていなかった。
+   * - og:image が 2 つあり、1 つめはサイト共通のロゴ。作品の絵は 2 つめ。
+   * ------------------------------------------------------------------ */
+
+  const ONL_MANGA_PATH_RE = /^\/manga\/([^/]+)\/?$/i;
+  const ONL_CHAPTER_PATH_RE = /^\/manga\/([^/]+)\/chapter-(\d+(?:\.\d+)?)\/?$/i;
+
+  /** 作品ページから、その作品の話数だけを新しい順に拾う。 */
+  function onlChaptersFromDoc(doc, baseUrl) {
+    let here;
+    try {
+      here = new URL(baseUrl);
+    } catch (e) {
+      return null;
+    }
+    const work = ONL_MANGA_PATH_RE.exec(here.pathname);
+    if (!work) return null;
+    const slug = work[1].toLowerCase();
+
+    const byUrl = new Map();
+    const links = doc.querySelectorAll('a[href*="/chapter-"]');
+    for (const link of links) {
+      const url = absolutize(link.getAttribute('href'), baseUrl);
+      if (!url || byUrl.has(url)) continue;
+
+      let parsed;
+      try {
+        parsed = new URL(url);
+      } catch (e) {
+        continue;
+      }
+      if (!ONL_HOST_RE.test(parsed.hostname)) continue;
+      const found = ONL_CHAPTER_PATH_RE.exec(parsed.pathname);
+      // 横の欄に並ぶ、よその作品の話数を落とす
+      if (!found || found[1].toLowerCase() !== slug) continue;
+
+      const number = parseFloat(found[2]);
+      if (!Number.isFinite(number)) continue;
+      byUrl.set(url, { url, number, label: 'Chapter-' + found[2] });
+    }
+
+    if (byUrl.size === 0) return null;
+    return [...byUrl.values()].sort((a, b) => b.number - a.number);
+  }
+
+  /**
+   * 作品の更新日時。JSON-LD の Article.dateModified。
+   *
+   * 本文の <time> は datetime を持たず、中身も「[最終更新日時: 2026-09-21
+   * 22:09:57]」と時差の無い書き方なので使わない。JSON-LD のほうは同じ時刻を
+   * +07:00 付きで名乗っている。
+   */
+  function onlUpdatedAt(doc) {
+    const nodes = doc.querySelectorAll('script[type="application/ld+json"]');
+    for (const node of nodes) {
+      let data;
+      try {
+        data = JSON.parse(node.textContent);
+      } catch (e) {
+        continue;
+      }
+      const items = Array.isArray(data) ? data : [data];
+      for (const item of items) {
+        if (!item || item['@type'] !== 'Article') continue;
+        const ms = parseDate(item.dateModified) || parseDate(item.datePublished);
+        if (ms) return ms;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * og:image のうち、作品の絵。
+   *
+   * 1 つめはどのページにも付くサイト共通のロゴ (しかも普通に読める) なので、
+   * 先頭だけを見ると全部のカードが同じロゴになる。2 つ以上あるときは
+   * 1 つめを捨てる。トップページのように 1 つしか無ければ、それを使う。
+   */
+  function onlOgImages(doc) {
+    const values = [];
+    for (const node of doc.querySelectorAll('meta[property="og:image"]')) {
+      const value = (node.getAttribute('content') || '').trim();
+      if (value) values.push(value);
+    }
+    return values.length > 1 ? values.slice(1) : values;
+  }
+
   /** ページが名乗るフィードから画像を 1 枚拾う。無ければ null。 */
   async function feedImage(doc, baseUrl, reload) {
     const feedUrl = findFeedUrl(doc, baseUrl);
@@ -798,14 +943,23 @@
    * 読めるかどうかはニュータブ側の <img> が決めるので、候補は残しておく。
    */
   async function fetchMetadata(url, reload) {
+    /*
+     * rawkuma.onl は HTML に Cache-Control: max-age=86400 を付けてくる。
+     * force-cache は鮮度を見ずに手元の写しを返すので、1 日ごとの取り直しが
+     * いつまでも同じ話数を読み続けかねない。ここだけ毎回サーバーに確かめる。
+     * (If-Modified-Since には応えず常に 200 が返る。実測)
+     */
+    const onl = isOnlHost(url);
     const page = await fetchText(
       url,
       'text/html,application/xhtml+xml',
       /text\/html|application\/xhtml/i,
-      reload
+      reload,
+      onl
     );
     const doc = new DOMParser().parseFromString(page.text, 'text/html');
     const meta = parseMetadata(doc);
+    const onlPage = isOnlHost(page.finalUrl);
 
     const images = [];
     const seen = new Set();
@@ -817,7 +971,9 @@
     };
 
     // 1〜3: ページが自分で名乗っている見出し画像
-    if (settings.sourceOg) {
+    if (settings.sourceOg && onlPage) {
+      for (const raw of onlOgImages(doc)) add(raw, 'og');
+    } else if (settings.sourceOg) {
       add(
         metaContent(doc, [
           'meta[property="og:image:secure_url"]',
@@ -841,7 +997,10 @@
     }
 
     // 5: 本文の img
-    if (settings.sourceBodyImg) {
+    // rawkuma.onl の本文には、よその作品のカバーが横の欄に並ぶ。作品の絵が
+    // もう分かっているなら見ない。先頭が一時的に読めなかったとき、よその
+    // 作品の絵に落ちて、それが手元に保存されてしまうため。
+    if (settings.sourceBodyImg && !(onlPage && images.length > 0)) {
       for (const raw of imagesFromBody(doc, 3)) add(raw, 'img');
     }
 
@@ -866,10 +1025,15 @@
      * 作品ページは話数の <time> から (/latest-update/ の並びはこの降順
      * そのものだった)。話数の並ばない rawkuma のページは、本文の <time> の
      * うちいちばん新しいもので代える。よそのサイトは null のまま。
+     *
+     * rawkuma.onl は話数に時刻が無いので、作品の JSON-LD から取る。
      */
     let updatedAt = null;
     let updatedSource = null;
-    if (isChapterHost(page.finalUrl)) {
+    if (onlPage) {
+      updatedAt = onlUpdatedAt(doc);
+      updatedSource = updatedAt ? 'json-ld' : null;
+    } else if (isChapterHost(page.finalUrl)) {
       updatedAt = chaptersUpdatedAt(chapters);
       updatedSource = updatedAt ? 'chapter' : null;
       if (!updatedAt) {
@@ -1000,7 +1164,7 @@
     const dates = {};
     for (const url of sortable) {
       const entry = stored[CACHE_PREFIX + url];
-      if (!entry || entry.v !== EXTRACT_VERSION) continue;
+      if (!isCurrentEntry(url, entry)) continue;
       const at = entry.data && entry.data.updatedAt;
       if (at) dates[url] = at;
     }

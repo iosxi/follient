@@ -112,6 +112,27 @@
       ],
     },
     {
+      /*
+       * 移転先の rawkuma.onl。.net とは作りが違う。
+       *
+       * 正しく動けば、作品のカードはサイト共通のロゴではなく作品の絵になり、
+       * 話数はその作品のものだけが並ぶ (横の欄のよその作品は混ざらない)。
+       * 並べ替えを入りにすると ブルーロック (2026-09-24) → キングダム (09-21)
+       * → アオのハコ (07-13) → アオアシ (2025-11-30) の順になる (2026-10-01
+       * 時点)。top と話数のページは日時が無いので後ろへ回る。GitHub は動かない。
+       */
+      title: 'RAWKUMA_ONL',
+      children: [
+        { title: 'RAWKUMA.onl - top', url: 'https://rawkuma.onl/' },
+        { title: 'アオアシ', url: 'https://rawkuma.onl/manga/aoashi' },
+        { title: 'GitHub', url: 'https://github.com/' },
+        { title: 'アオのハコ', url: 'https://rawkuma.onl/manga/aonohako' },
+        { title: 'キングダム', url: 'https://rawkuma.onl/manga/kingudamu' },
+        { title: 'ブルーロック', url: 'https://rawkuma.onl/manga/bururotsuku' },
+        { title: 'アオアシ 第410話', url: 'https://rawkuma.onl/manga/aoashi/chapter-410' },
+      ],
+    },
+    {
       // OGP 画像を持たないページばかりのフォルダ。スクリーンショット代替と、
       // 同一ホストが並んだときの間隔制御を確かめるためのもの。
       title: 'OGPなし',
