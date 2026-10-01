@@ -324,7 +324,17 @@ async function hydrateCard(card, force) {
 
   setThumbState(card, 'is-pending', '取得中');
 
-  const data = await requestMetadata(url, force);
+  // 一度読めた絵は手元にある。メタデータの返事を待たずに先に出す。
+  // メタデータは期限が切れると取り直しに網へ出るので、待っていると回線が
+  // 切れている・遅いときに手元の絵まで 8 秒ずつ遅れる (DEVELOPMENT.md
+  // 「手元の絵はメタデータを待たずに出す」)。
+  const metadataTask = requestMetadata(url, force);
+  const stored = force ? null : await requestStoredThumb(url);
+  if (myGeneration !== generation || !card.isConnected) return;
+  const hasStored = Boolean(stored && stored.image);
+  if (hasStored) showImage(card, [stored.image]);
+
+  const data = await metadataTask;
   if (myGeneration !== generation || !card.isConnected) return;
 
   // ブックマークに利用者自身が付けた名前があればそれを尊重し、
@@ -354,14 +364,10 @@ async function hydrateCard(card, force) {
   // 途切れただけで、苦労して取れた絵が隠れてしまうから。
   const refused = data && typeof data.httpStatus === 'number' && data.httpStatus >= 400;
 
-  // 一度読めた絵は手元にある。相手の機嫌に左右されず、網にも出ない。
-  if (!force && !refused) {
-    const stored = await requestStoredThumb(url);
-    if (myGeneration !== generation || !card.isConnected) return;
-    if (stored && stored.image) {
-      showImage(card, [stored.image]);
-      return;
-    }
+  if (hasStored) {
+    if (!refused) return;
+    // 先に出した手元の絵を下げて、状態タイルに譲る
+    clearImage(card);
   }
 
   // 2xx で返らなかったページは、番号と意味を出して終わる。
@@ -661,16 +667,22 @@ function showImage(card, sources) {
   attempt();
 }
 
-/** 「サムネイル更新」から呼ぶ。いまの絵を捨てて、はじめから取り直す。 */
-async function refreshThumbnail(card) {
+/** 出している絵を下げる。読み込み中なら、その完了も無かったことにする。 */
+function clearImage(card) {
   const img = card.querySelector('.thumb-img');
   if (img) {
+    img.onload = null;
+    img.onerror = null;
     img.classList.remove('loaded');
     img.removeAttribute('src');
   }
   const thumb = card.querySelector('.thumb');
   if (thumb) thumb.style.removeProperty('aspect-ratio');
+}
 
+/** 「サムネイル更新」から呼ぶ。いまの絵を捨てて、はじめから取り直す。 */
+async function refreshThumbnail(card) {
+  clearImage(card);
   restoreFallback(card);
   await hydrateCard(card, true);
 }
