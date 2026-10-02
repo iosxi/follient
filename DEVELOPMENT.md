@@ -713,7 +713,11 @@ node tools/sign.js
 ```
 
 資格情報は環境変数からのみ読む（引数に書くと履歴やプロセス一覧に残る）。
-`--channel unlisted` 固定で、AMO には公開されず署名済み XPI が `dist/` に出る。
+`--channel unlisted` 固定で、AMO には公開されず署名済み XPI が
+`dist/follient-<version>-signed.xpi` に出る。web-ext は AMO の URL の末尾
+（`5ff91d3a78b74ecca477-29.0.0.xpi` のようなハッシュ入りの名前）をそのまま
+保存名にし、名前を指定するオプションも無いので、`sign.js` が一時ディレクトリで
+受け取ってから名前を付け直している。`fetch-signed.js` も同じ名前で保存する。
 署名には `browser_specific_settings.gecko.id` が使われる。この ID は AMO 上で
 アカウントに永続的に紐づくので変更しないこと。
 

@@ -177,8 +177,8 @@ async function main() {
     process.exit(1);
   }
 
-  const name =
-    path.basename(new URL(downloadUrl).pathname) || 'follient-' + wantedVersion + '-signed.xpi';
+  // AMO の URL の末尾はハッシュ入りで何の拡張か分からないので、sign.js と同じ名前にそろえる
+  const name = manifest.name + '-' + wantedVersion + '-signed.xpi';
   const outFile = path.join(distDir, name);
   fs.mkdirSync(distDir, { recursive: true });
   fs.writeFileSync(outFile, body);

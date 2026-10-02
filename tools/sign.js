@@ -7,6 +7,8 @@
  *
  * --channel unlisted (既定) は AMO に公開せず、署名済み XPI だけを受け取る。
  * 署名された XPI は通常版の Firefox にそのままインストールできる。
+ *
+ * 出力は dist/follient-<version>-signed.xpi。
  */
 const { spawnSync } = require('child_process');
 const path = require('path');
@@ -77,6 +79,14 @@ console.log('  channel = ' + channel);
 console.log('  staged  = ' + stage);
 console.log('');
 
+/**
+ * web-ext は AMO のダウンロード URL の末尾 (5ff91d3a…-29.0.0.xpi のような
+ * ハッシュ入りの名前) をそのまま保存名にし、名前を指定するオプションも無い。
+ * いったん空の一時ディレクトリに受け取り、名前を付け直して dist/ に移す。
+ */
+const received = fs.mkdtempSync(path.join(os.tmpdir(), 'follient-signed-'));
+const signedName = manifest.name + '-' + manifest.version + '-signed.xpi';
+
 const result = spawnSync(
   process.execPath,
   [
@@ -85,7 +95,7 @@ const result = spawnSync(
     'web-ext@latest',
     'sign',
     '--source-dir', stage,
-    '--artifacts-dir', distDir,
+    '--artifacts-dir', received,
     '--channel', channel,
     '--api-key', issuer,
     '--api-secret', secret,
@@ -96,14 +106,29 @@ const result = spawnSync(
 fs.rmSync(stage, { recursive: true, force: true });
 
 if (result.error) {
+  fs.rmSync(received, { recursive: true, force: true });
   console.error('\n署名プロセスを起動できませんでした: ' + result.error.code);
   console.error(result.error.message);
   process.exit(1);
 }
 if (result.status !== 0) {
+  fs.rmSync(received, { recursive: true, force: true });
   console.error('\n署名に失敗しました (web-ext の終了コード ' + result.status + ')。');
   console.error('上に出ている web-ext のメッセージを確認してください。');
   process.exit(result.status === null ? 1 : result.status);
 }
 
-console.log('\n署名済み XPI は dist/ にあります。');
+const xpis = fs.readdirSync(received).filter((name) => name.endsWith('.xpi'));
+if (xpis.length !== 1) {
+  console.error('\n署名済み XPI が 1 つに定まりません: ' + (xpis.join(', ') || '(なし)'));
+  console.error('受け取ったファイルは ' + received + ' に残してあります。');
+  process.exit(1);
+}
+
+fs.mkdirSync(distDir, { recursive: true });
+const outFile = path.join(distDir, signedName);
+// 一時ディレクトリが別ドライブだと rename できないのでコピーする
+fs.copyFileSync(path.join(received, xpis[0]), outFile);
+fs.rmSync(received, { recursive: true, force: true });
+
+console.log('\n署名済み XPI: ' + path.relative(root, outFile) + ' (AMO 上の名前は ' + xpis[0] + ')');
